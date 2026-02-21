@@ -1,14 +1,18 @@
-// Vercel serverless function — proxies all game CRUD to Supabase
-// Environment variables (set in Vercel dashboard):
-//   SUPABASE_URL       — e.g. https://xxxxx.supabase.co
-//   SUPABASE_KEY       — your anon/public key (or service key for full access)
-
 const headers = (key) => ({
   'Content-Type': 'application/json',
   'apikey': key,
   'Authorization': `Bearer ${key}`,
   'Prefer': 'return=representation',
 });
+
+function sanitize(obj) {
+  const allowed = ['team_name', 'players', 'shots', 'events', 'quarter', 'updated_at'];
+  const out = {};
+  if (obj.teamName !== undefined) out.team_name = obj.teamName;
+  if (obj.team_name !== undefined) out.team_name = obj.team_name;
+  allowed.forEach(k => { if (obj[k] !== undefined) out[k] = obj[k]; });
+  return out;
+}
 
 export default async function handler(req, res) {
   const url = process.env.SUPABASE_URL;
@@ -21,7 +25,6 @@ export default async function handler(req, res) {
   const base = `${url}/rest/v1/games`;
 
   try {
-    // GET — list all or get one by id
     if (req.method === 'GET') {
       const { id } = req.query;
       let endpoint;
@@ -35,32 +38,32 @@ export default async function handler(req, res) {
       return res.status(200).json(data);
     }
 
-    // POST — create a new game
     if (req.method === 'POST') {
+      const body = sanitize(req.body);
+      body.created_at = req.body.created_at || new Date().toISOString();
       const resp = await fetch(base, {
         method: 'POST',
         headers: headers(key),
-        body: JSON.stringify(req.body),
+        body: JSON.stringify(body),
       });
       const data = await resp.json();
       return res.status(201).json(data);
     }
 
-    // PUT — update an existing game
     if (req.method === 'PUT') {
       const { id } = req.body;
       if (!id) return res.status(400).json({ error: 'Missing game id' });
-      const { id: _, ...updates } = req.body;
+      const updates = sanitize(req.body);
+      updates.updated_at = new Date().toISOString();
       const resp = await fetch(`${base}?id=eq.${id}`, {
         method: 'PATCH',
         headers: headers(key),
-        body: JSON.stringify({ ...updates, updated_at: new Date().toISOString() }),
+        body: JSON.stringify(updates),
       });
       const data = await resp.json();
       return res.status(200).json(data);
     }
 
-    // DELETE — delete a game
     if (req.method === 'DELETE') {
       const { id } = req.query;
       if (!id) return res.status(400).json({ error: 'Missing game id' });
