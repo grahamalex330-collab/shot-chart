@@ -39,32 +39,13 @@ export default function SharedView({ gameId }) {
   useEffect(() => {
     (async () => {
       const g = await fetchGame(gameId);
-      if (g) {
-        setGame(g);
-      } else {
-        setError("Game not found");
-      }
+      if (g) { setGame(g); } else { setError("Game not found"); }
       setLoading(false);
     })();
   }, [gameId]);
 
-  if (loading) {
-    return (
-      <div style={{ ...SHELL, display: "flex", alignItems: "center", justifyContent: "center" }}>
-        <div style={{ color: "#555", fontSize: 14 }}>Loading game...</div>
-      </div>
-    );
-  }
-
-  if (error || !game) {
-    return (
-      <div style={{ ...SHELL, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12 }}>
-        <div style={{ fontSize: 40 }}>🏀</div>
-        <div style={{ color: "#888", fontSize: 16, fontWeight: 600 }}>{error || "Game not found"}</div>
-        <a href="/" style={{ color: "#facc15", fontSize: 13, fontWeight: 600 }}>← Back to Shot Chart</a>
-      </div>
-    );
-  }
+  if (loading) return (<div style={{ ...SHELL, display: "flex", alignItems: "center", justifyContent: "center" }}><div style={{ color: "#555", fontSize: 14 }}>Loading game...</div></div>);
+  if (error || !game) return (<div style={{ ...SHELL, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12 }}><div style={{ fontSize: 40 }}>🏀</div><div style={{ color: "#888", fontSize: 16, fontWeight: 600 }}>{error || "Game not found"}</div><a href="/" style={{ color: "#facc15", fontSize: 13, fontWeight: 600 }}>← Back to Shot Chart</a></div>);
 
   const shots = game.shots || [];
   const events = game.events || [];
@@ -82,39 +63,39 @@ export default function SharedView({ gameId }) {
   const totalPts = shots.reduce((sum, s) => sum + getPoints(s), 0);
   const teamFouls = events.filter(e => e.type === "foul").length;
   const teamTOs = events.filter(e => e.type === "turnover").length;
+  const teamAssists = shots.filter(s => s.assistNum).length;
+  const teamRebs = events.filter(e => e.type === "rebound").length;
+  const teamStls = events.filter(e => e.type === "steal").length;
+  const teamBlks = events.filter(e => e.type === "block").length;
 
   const y3 = fieldGoals.filter(s => THREE_PT.has(s.zone));
   const y3m = y3.filter(s => s.result === "make").length;
   const y3p = y3.length > 0 ? Math.round(y3m / y3.length * 100) : 0;
 
-  const zoneStats = {};
-  ZONES.forEach(z => {
-    const zs = fieldGoals.filter(s => s.zone === z.id);
-    zoneStats[z.id] = { makes: zs.filter(s => s.result === "make").length, total: zs.length };
-  });
+  const oppFoulEvents = events.filter(e => e.type === "opp_foul");
+  const oppTotalFouls = oppFoulEvents.length;
 
-  const playerPts = {};
-  const playerFouls = {};
-  const playerTOs = {};
-  players.forEach(p => { playerPts[p.number] = 0; playerFouls[p.number] = 0; playerTOs[p.number] = 0; });
-  shots.forEach(s => { if (s.playerNum) playerPts[s.playerNum] = (playerPts[s.playerNum] || 0) + getPoints(s); });
+  const zoneStats = {};
+  ZONES.forEach(z => { const zs = fieldGoals.filter(s => s.zone === z.id); zoneStats[z.id] = { makes: zs.filter(s => s.result === "make").length, total: zs.length }; });
+
+  const playerPts = {}; const playerFouls = {}; const playerTOs = {};
+  const playerAssists = {}; const playerRebs = {}; const playerStls = {}; const playerBlks = {};
+  players.forEach(p => { playerPts[p.number] = 0; playerFouls[p.number] = 0; playerTOs[p.number] = 0; playerAssists[p.number] = 0; playerRebs[p.number] = 0; playerStls[p.number] = 0; playerBlks[p.number] = 0; });
+  shots.forEach(s => {
+    if (s.playerNum) playerPts[s.playerNum] = (playerPts[s.playerNum] || 0) + getPoints(s);
+    if (s.assistNum) playerAssists[s.assistNum] = (playerAssists[s.assistNum] || 0) + 1;
+  });
   events.forEach(e => {
     if (e.type === "foul" && e.playerNum) playerFouls[e.playerNum] = (playerFouls[e.playerNum] || 0) + 1;
     if (e.type === "turnover" && e.playerNum) playerTOs[e.playerNum] = (playerTOs[e.playerNum] || 0) + 1;
+    if (e.type === "rebound" && e.playerNum) playerRebs[e.playerNum] = (playerRebs[e.playerNum] || 0) + 1;
+    if (e.type === "steal" && e.playerNum) playerStls[e.playerNum] = (playerStls[e.playerNum] || 0) + 1;
+    if (e.type === "block" && e.playerNum) playerBlks[e.playerNum] = (playerBlks[e.playerNum] || 0) + 1;
   });
   const sortedPlayers = [...players].sort((a, b) => parseInt(a.number) - parseInt(b.number));
 
-  const getZoneColor = (id) => {
-    const s = zoneStats[id]; if (!s || !s.total) return "rgba(255,255,255,0.04)";
-    const p = s.makes / s.total;
-    return p >= 0.5 ? "rgba(34,197,94,0.35)" : p >= 0.35 ? "rgba(250,204,21,0.3)" : "rgba(239,68,68,0.3)";
-  };
-  const getZoneBorder = (id) => {
-    const s = zoneStats[id]; if (!s || !s.total) return "rgba(255,255,255,0.12)";
-    const p = s.makes / s.total;
-    return p >= 0.5 ? "rgba(34,197,94,0.7)" : p >= 0.35 ? "rgba(250,204,21,0.6)" : "rgba(239,68,68,0.6)";
-  };
-
+  const getZoneColor = (id) => { const s = zoneStats[id]; if (!s || !s.total) return "rgba(255,255,255,0.04)"; const p = s.makes / s.total; return p >= 0.5 ? "rgba(34,197,94,0.35)" : p >= 0.35 ? "rgba(250,204,21,0.3)" : "rgba(239,68,68,0.3)"; };
+  const getZoneBorder = (id) => { const s = zoneStats[id]; if (!s || !s.total) return "rgba(255,255,255,0.12)"; const p = s.makes / s.total; return p >= 0.5 ? "rgba(34,197,94,0.7)" : p >= 0.35 ? "rgba(250,204,21,0.6)" : "rgba(239,68,68,0.6)"; };
   const fmtDate = (iso) => { try { return new Date(iso).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }); } catch(e) { return ""; } };
 
   return (
@@ -130,7 +111,7 @@ export default function SharedView({ gameId }) {
         <div style={{ fontSize: 11, color: "#666", letterSpacing: 2, marginTop: 4 }}>TOTAL POINTS</div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 6, padding: "0 16px 16px" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 6, padding: "0 16px 8px" }}>
         <div style={{ textAlign: "center", background: "rgba(255,255,255,0.03)", borderRadius: 10, padding: "10px 4px" }}>
           <div style={{ fontSize: 18, fontWeight: 800, color: fgPct >= 50 ? "#22c55e" : fgPct >= 35 ? "#facc15" : fgTotal ? "#ef4444" : "#555" }}>{fgTotal ? fgPct + "%" : "—"}</div>
           <div style={{ fontSize: 8, color: "#666" }}>FG {fgMakes}/{fgTotal}</div>
@@ -149,6 +130,27 @@ export default function SharedView({ gameId }) {
         </div>
       </div>
 
+      {/* Extra stats row */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 6, padding: "0 16px 16px" }}>
+        <div style={{ textAlign: "center", background: "rgba(255,255,255,0.03)", borderRadius: 10, padding: "8px 4px" }}>
+          <div style={{ fontSize: 16, fontWeight: 800, color: "#22c55e" }}>{teamAssists}</div>
+          <div style={{ fontSize: 8, color: "#666" }}>AST</div>
+        </div>
+        <div style={{ textAlign: "center", background: "rgba(255,255,255,0.03)", borderRadius: 10, padding: "8px 4px" }}>
+          <div style={{ fontSize: 16, fontWeight: 800, color: "#22c55e" }}>{teamRebs}</div>
+          <div style={{ fontSize: 8, color: "#666" }}>REB</div>
+        </div>
+        <div style={{ textAlign: "center", background: "rgba(255,255,255,0.03)", borderRadius: 10, padding: "8px 4px" }}>
+          <div style={{ fontSize: 16, fontWeight: 800, color: "#3b82f6" }}>{teamStls}</div>
+          <div style={{ fontSize: 8, color: "#666" }}>STL</div>
+        </div>
+        <div style={{ textAlign: "center", background: "rgba(255,255,255,0.03)", borderRadius: 10, padding: "8px 4px" }}>
+          <div style={{ fontSize: 16, fontWeight: 800, color: "#ec4899" }}>{teamBlks}</div>
+          <div style={{ fontSize: 8, color: "#666" }}>BLK</div>
+        </div>
+      </div>
+
+      {/* Court */}
       <div style={{ padding: "0 10px", margin: "0 8px" }}>
         <svg viewBox="0 0 400 420" style={{ width: "100%", height: "auto", display: "block" }}>
           <rect x="0" y="0" width="400" height="400" rx="8" fill="#1a1206" stroke="rgba(255,180,50,0.15)" strokeWidth="1" />
@@ -166,20 +168,15 @@ export default function SharedView({ gameId }) {
             return (
               <g key={z.id}>
                 <path d={z.path} fill={getZoneColor(z.id)} stroke={getZoneBorder(z.id)} strokeWidth={1} />
-                {s && s.total > 0 ? (
-                  <>
-                    <text x={z.cx} y={z.cy - 4} textAnchor="middle" fill="#fff" fontSize="16" fontWeight="800" style={{ pointerEvents: "none" }}>{s.makes}/{s.total}</text>
-                    <text x={z.cx} y={z.cy + 12} textAnchor="middle" fill={pct >= 50 ? "#22c55e" : pct >= 35 ? "#facc15" : "#ef4444"} fontSize="11" fontWeight="600" style={{ pointerEvents: "none" }}>{pct}%</text>
-                  </>
-                ) : (
-                  <text x={z.cx} y={z.cy + 4} textAnchor="middle" fill="rgba(255,255,255,0.2)" fontSize="10" style={{ pointerEvents: "none" }}>{z.label}</text>
-                )}
+                {s && s.total > 0 ? (<><text x={z.cx} y={z.cy - 4} textAnchor="middle" fill="#fff" fontSize="16" fontWeight="800" style={{ pointerEvents: "none" }}>{s.makes}/{s.total}</text><text x={z.cx} y={z.cy + 12} textAnchor="middle" fill={pct >= 50 ? "#22c55e" : pct >= 35 ? "#facc15" : "#ef4444"} fontSize="11" fontWeight="600" style={{ pointerEvents: "none" }}>{pct}%</text></>
+                ) : (<text x={z.cx} y={z.cy + 4} textAnchor="middle" fill="rgba(255,255,255,0.2)" fontSize="10" style={{ pointerEvents: "none" }}>{z.label}</text>)}
               </g>
             );
           })}
         </svg>
       </div>
 
+      {/* Player Stats */}
       {sortedPlayers.length > 0 && (
         <div style={{ padding: "16px 16px 4px" }}>
           <div style={SECHEAD}>Player Stats</div>
@@ -190,22 +187,25 @@ export default function SharedView({ gameId }) {
               const pFGm = pFG.filter(s => s.result === "make").length;
               const pFTm = pFT.filter(s => s.result === "make").length;
               const pFGp = pFG.length > 0 ? Math.round(pFGm / pFG.length * 100) : 0;
-              const p3 = pFG.filter(s => THREE_PT.has(s.zone));
-              const p3m = p3.filter(s => s.result === "make").length;
-              const fouls = playerFouls[p.number] || 0;
-              const tos = playerTOs[p.number] || 0;
-              const pts = playerPts[p.number] || 0;
+              const p3 = pFG.filter(s => THREE_PT.has(s.zone)); const p3m = p3.filter(s => s.result === "make").length;
+              const fouls = playerFouls[p.number] || 0; const tos = playerTOs[p.number] || 0; const pts = playerPts[p.number] || 0;
+              const ast = playerAssists[p.number] || 0; const reb = playerRebs[p.number] || 0;
+              const stl = playerStls[p.number] || 0; const blk = playerBlks[p.number] || 0;
               const foulColor = fouls >= 4 ? "#ef4444" : fouls >= 3 ? "#f97316" : "#666";
+              const statParts = [];
+              statParts.push("FG " + pFGm + "/" + pFG.length + (pFG.length > 0 ? " (" + pFGp + "%)" : ""));
+              if (p3.length > 0) statParts.push("3PT " + p3m + "/" + p3.length);
+              if (pFT.length > 0) statParts.push("FT " + pFTm + "/" + pFT.length);
+              if (ast > 0) statParts.push(ast + " ast");
+              if (reb > 0) statParts.push(reb + " reb");
+              if (stl > 0) statParts.push(stl + " stl");
+              if (blk > 0) statParts.push(blk + " blk");
               return (
                 <div key={p.number} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0", borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
                   <div style={{ ...JERSEY, width: 34, height: 34, fontSize: 14, flexShrink: 0 }}>{p.number}</div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 12, fontWeight: 700, color: "#ccc" }}>{p.name}</div>
-                    <div style={{ fontSize: 9, color: "#666", marginTop: 2 }}>
-                      {"FG " + pFGm + "/" + pFG.length + (pFG.length > 0 ? " (" + pFGp + "%)" : "")}
-                      {p3.length > 0 ? " · 3PT " + p3m + "/" + p3.length : ""}
-                      {pFT.length > 0 ? " · FT " + pFTm + "/" + pFT.length : ""}
-                    </div>
+                    <div style={{ fontSize: 9, color: "#666", marginTop: 2 }}>{statParts.join(" · ")}</div>
                     {(fouls > 0 || tos > 0) && (
                       <div style={{ fontSize: 9, color: "#666", marginTop: 1 }}>
                         {fouls > 0 && <span style={{ color: foulColor }}>{fouls} fouls</span>}
@@ -225,6 +225,22 @@ export default function SharedView({ gameId }) {
         </div>
       )}
 
+      {/* Opponent Fouls */}
+      {oppTotalFouls > 0 && (
+        <div style={{ padding: "8px 16px" }}>
+          <div style={{ ...SECHEAD, color: "#ef4444" }}>Opponent Fouls ({oppTotalFouls})</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {Object.entries((() => { const m = {}; oppFoulEvents.forEach(e => { m[e.playerNum] = (m[e.playerNum] || 0) + 1; }); return m; })()).sort((a, b) => b[1] - a[1]).map(([num, count]) => (
+              <div key={num} style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)", borderRadius: 8, padding: "4px 10px", fontSize: 11 }}>
+                <span style={{ color: "#ef4444", fontWeight: 700 }}>#{num}</span>
+                <span style={{ color: "#888", marginLeft: 4 }}>{count}f</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Zone Breakdown */}
       {fgTotal > 0 && (
         <div style={{ padding: "12px 16px 20px" }}>
           <div style={SECHEAD}>Zone Breakdown</div>
@@ -234,12 +250,8 @@ export default function SharedView({ gameId }) {
               return (
                 <div key={z.id} style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <div style={{ width: 80, fontSize: 12, color: "#888", flexShrink: 0 }}>{z.label}</div>
-                  <div style={{ flex: 1, height: 8, borderRadius: 4, background: "rgba(255,255,255,0.06)", overflow: "hidden" }}>
-                    <div style={{ height: "100%", width: p + "%", borderRadius: 4, background: p >= 50 ? "#22c55e" : p >= 35 ? "#facc15" : "#ef4444" }} />
-                  </div>
-                  <div style={{ width: 60, textAlign: "right", fontSize: 12, color: "#ccc", fontWeight: 700 }}>
-                    {s.makes}/{s.total} <span style={{ color: "#666", fontWeight: 400 }}>({p}%)</span>
-                  </div>
+                  <div style={{ flex: 1, height: 8, borderRadius: 4, background: "rgba(255,255,255,0.06)", overflow: "hidden" }}><div style={{ height: "100%", width: p + "%", borderRadius: 4, background: p >= 50 ? "#22c55e" : p >= 35 ? "#facc15" : "#ef4444" }} /></div>
+                  <div style={{ width: 60, textAlign: "right", fontSize: 12, color: "#ccc", fontWeight: 700 }}>{s.makes}/{s.total} <span style={{ color: "#666", fontWeight: 400 }}>({p}%)</span></div>
                 </div>
               );
             })}
