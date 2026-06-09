@@ -10,8 +10,8 @@
   },
 "dependencies": {
   "jspdf": "^2.5.2",
-  "react": "...",
-  "react-dom": "..."
+  "react": "^18.3.1",
+"react-dom": "^18.3.1",
 },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.2.0",
