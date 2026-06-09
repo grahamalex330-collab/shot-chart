@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { fetchAllGames, createGame, updateGame, deleteGame as apiDeleteGame } from "./api.js";
+import { exportGamePdf } from "./exportPdf.js";
 
 /* ─── ZONES (6, flipped court — hoop at top) ─── */
 const ZONES = [
@@ -569,9 +570,10 @@ export default function App() {
         </div>
       </div>
 
-      {/* Player Stats Toggle */}
-      <div style={{padding:"8px 16px",textAlign:"center"}}>
-        <button onClick={()=>setShowStats(p=>!p)} style={{background:showStats?"rgba(250,204,21,0.15)":"rgba(255,255,255,0.04)",border:"1px solid "+(showStats?"rgba(250,204,21,0.3)":"rgba(255,255,255,0.08)"),color:showStats?"#facc15":"#888",fontSize:12,fontWeight:700,padding:"10px 24px",borderRadius:10,cursor:"pointer",width:"100%"}}>{showStats?"▾ Hide player stats":"▸ Player stats and breakdown"}</button>
+      {/* Player Stats Toggle + Export */}
+      <div style={{padding:"8px 16px",display:"flex",gap:8}}>
+        <button onClick={()=>setShowStats(p=>!p)} style={{flex:1,background:showStats?"rgba(250,204,21,0.15)":"rgba(255,255,255,0.04)",border:"1px solid "+(showStats?"rgba(250,204,21,0.3)":"rgba(255,255,255,0.08)"),color:showStats?"#facc15":"#888",fontSize:12,fontWeight:700,padding:"10px 24px",borderRadius:10,cursor:"pointer"}}>{showStats?"▾ Hide player stats":"▸ Player stats and breakdown"}</button>
+        <button onClick={()=>{const g=sessions.find(s=>s.id===curId);if(g)exportGamePdf({...g,shots,events,players,quarter});}} style={{background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",color:"#888",fontSize:12,fontWeight:700,padding:"10px 16px",borderRadius:10,cursor:"pointer"}}>Export PDF</button>
       </div>
 
       {showStats&&<div style={{padding:"0 16px 16px"}}>
