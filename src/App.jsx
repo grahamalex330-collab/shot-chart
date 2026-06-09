@@ -74,6 +74,37 @@ function PBar({ label, pct, color, mb }) {
     </div>
   );
 }
+
+/* ─── RECENT ACTION DESCRIPTION HELPER ─── */
+function describeAction(item, players) {
+  const pName = (num) => {
+    if (!num) return "";
+    const p = players.find(x => x.number === num);
+    return p ? "#" + p.number + " " + p.name : "#" + num;
+  };
+  const qLabel = Q_LABELS[item.quarter] || "";
+  if (item.result !== undefined) {
+    const made = item.result === "make" ? "Make" : "Miss";
+    if (item.isFT) {
+      const who = item.playerNum ? " — " + pName(item.playerNum) : "";
+      return "FT " + made + who + " — " + qLabel;
+    }
+    const zone = ZONES.find(z => z.id === item.zone);
+    const zoneName = zone ? zone.label : item.zone || "";
+    const who = item.playerNum ? " — " + pName(item.playerNum) : "";
+    const assist = item.assistNum ? " (ast " + pName(item.assistNum) + ")" : "";
+    return made + " — " + zoneName + who + assist + " — " + qLabel;
+  }
+  if (item.type === "foul") return "Foul — " + pName(item.playerNum) + " — " + qLabel;
+  if (item.type === "opp_foul") return "Opp Foul — #" + (item.playerNum || "?") + " — " + qLabel;
+  if (item.type === "turnover") return "Turnover — " + pName(item.playerNum) + " — " + qLabel;
+  if (item.type === "timeout") return "Timeout " + item.duration + "s — " + qLabel;
+  if (item.type === "rebound") return "Rebound — " + pName(item.playerNum) + " — " + qLabel;
+  if (item.type === "steal") return "Steal — " + pName(item.playerNum) + " — " + qLabel;
+  if (item.type === "block") return "Block — " + pName(item.playerNum) + " — " + qLabel;
+  return "Action — " + qLabel;
+}
+
 /* ─── APP ─── */
 export default function App() {
   const [sessions, setSessions] = useState([]);
@@ -89,6 +120,7 @@ export default function App() {
   const [flash, setFlash] = useState(null);
   const [view, setView] = useState("loading");
   const [pending, setPending] = useState(null);
+  const [pendingAssist, setPendingAssist] = useState(null);
   const [showTOPicker, setShowTOPicker] = useState(false);
   const [showStats, setShowStats] = useState(false);
   const [showYearStats, setShowYearStats] = useState(false);
@@ -98,6 +130,9 @@ export default function App() {
   const [dbStatus, setDbStatus] = useState("loading");
   const [saveOk, setSaveOk] = useState(null);
   const [shareMsg, setShareMsg] = useState(null);
+  const [showOppFoulPicker, setShowOppFoulPicker] = useState(false);
+  const [oppFoulNum, setOppFoulNum] = useState("");
+  const [showRecent, setShowRecent] = useState(false);
   const idRef = useRef(null);
   idRef.current = curId;
 
@@ -108,10 +143,7 @@ export default function App() {
       if (cancelled) return;
       if (games === null) {
         setDbStatus("error");
-        try {
-          const local = localStorage.getItem("sc_data");
-          if (local) setSessions(JSON.parse(local));
-        } catch (e) {}
+        try { const local = localStorage.getItem("sc_data"); if (local) setSessions(JSON.parse(local)); } catch (e) {}
       } else {
         setDbStatus("ok");
         setSessions(games);
@@ -130,12 +162,8 @@ export default function App() {
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
       const result = await updateGame(gameData);
-      if (result) {
-        setSaveOk(true);
-        setTimeout(() => setSaveOk(null), 1200);
-      } else {
-        setSaveOk(false);
-      }
+      if (result) { setSaveOk(true); setTimeout(() => setSaveOk(null), 1200); }
+      else { setSaveOk(false); }
     }, 800);
   }, [dbStatus, sessions]);
 
@@ -168,54 +196,19 @@ export default function App() {
   };
 
   const startSession = async () => {
-    const gameData = {
-      team_name: teamName || "Game",
-      players: [...players],
-      shots: [],
-      events: [],
-      quarter: 0,
-      created_at: new Date().toISOString(),
-    };
-
+    const gameData = { team_name: teamName || "Game", players: [...players], shots: [], events: [], quarter: 0, created_at: new Date().toISOString() };
     let saved;
-    if (dbStatus === "ok") {
-      saved = await createGame(gameData);
-    }
-
+    if (dbStatus === "ok") saved = await createGame(gameData);
     const s = saved || { id: genId(), ...gameData, teamName: gameData.team_name };
-
-    const normalized = {
-      id: s.id,
-      teamName: s.team_name || s.teamName || gameData.team_name,
-      players: s.players || gameData.players,
-      shots: s.shots || [],
-      events: s.events || [],
-      quarter: s.quarter || 0,
-      createdAt: s.created_at || s.createdAt || gameData.created_at,
-    };
-
+    const normalized = { id: s.id, teamName: s.team_name || s.teamName || gameData.team_name, players: s.players || gameData.players, shots: s.shots || [], events: s.events || [], quarter: s.quarter || 0, createdAt: s.created_at || s.createdAt || gameData.created_at };
     setSessions(prev => [normalized, ...prev]);
-    setCurId(normalized.id);
-    setShots([]);
-    setEvents([]);
-    setQuarter(0);
-    setActiveZone(null);
-    setFtMode(false);
-    setPending(null);
-    setView("tracker");
+    setCurId(normalized.id); setShots([]); setEvents([]); setQuarter(0); setActiveZone(null); setFtMode(false); setPending(null); setPendingAssist(null); setView("tracker");
   };
 
   const openSession = (s) => {
-    setCurId(s.id);
-    setShots([...(s.shots || [])]);
-    setEvents([...(s.events || [])]);
-    setPlayers([...(s.players || [])]);
-    setTeamName(s.teamName || s.team_name || "");
-    setQuarter(s.quarter || 0);
-    setActiveZone(null);
-    setFtMode(false);
-    setPending(null);
-    setView("tracker");
+    setCurId(s.id); setShots([...(s.shots || [])]); setEvents([...(s.events || [])]); setPlayers([...(s.players || [])]);
+    setTeamName(s.teamName || s.team_name || ""); setQuarter(s.quarter || 0);
+    setActiveZone(null); setFtMode(false); setPending(null); setPendingAssist(null); setShowRecent(false); setView("tracker");
   };
 
   const deleteSession = async (id, e) => {
@@ -227,22 +220,15 @@ export default function App() {
 
   const shareGame = (id) => {
     const url = window.location.origin + "/game/" + id;
-    if (navigator.clipboard) {
-      navigator.clipboard.writeText(url);
-      setShareMsg(id);
-      setTimeout(() => setShareMsg(null), 2000);
-    } else {
-      prompt("Share this link:", url);
-    }
+    if (navigator.clipboard) { navigator.clipboard.writeText(url); setShareMsg(id); setTimeout(() => setShareMsg(null), 2000); }
+    else { prompt("Share this link:", url); }
   };
 
+  /* ─── COMPUTED STATS ─── */
   const fieldGoals = shots.filter(s => !s.isFT);
   const freeThrows = shots.filter(s => s.isFT);
   const zoneStats = {};
-  ZONES.forEach(z => {
-    const zs = fieldGoals.filter(s => s.zone === z.id);
-    zoneStats[z.id] = { makes: zs.filter(s => s.result === "make").length, total: zs.length };
-  });
+  ZONES.forEach(z => { const zs = fieldGoals.filter(s => s.zone === z.id); zoneStats[z.id] = { makes: zs.filter(s => s.result === "make").length, total: zs.length }; });
   const fgMakes = fieldGoals.filter(s => s.result === "make").length;
   const fgTotal = fieldGoals.length;
   const fgPct = fgTotal > 0 ? Math.round(fgMakes / fgTotal * 100) : 0;
@@ -250,142 +236,149 @@ export default function App() {
   const ftTotal = freeThrows.length;
   const ftPct = ftTotal > 0 ? Math.round(ftMakes / ftTotal * 100) : 0;
 
-  const playerPts = {};
-  const playerFouls = {};
-  const playerTOs = {};
-  const playerCounts = {};
-  players.forEach(p => { playerPts[p.number] = 0; playerFouls[p.number] = 0; playerTOs[p.number] = 0; playerCounts[p.number] = 0; });
+  const playerPts = {}; const playerFouls = {}; const playerTOs = {}; const playerCounts = {};
+  const playerAssists = {}; const playerRebs = {}; const playerStls = {}; const playerBlks = {};
+  players.forEach(p => { playerPts[p.number] = 0; playerFouls[p.number] = 0; playerTOs[p.number] = 0; playerCounts[p.number] = 0; playerAssists[p.number] = 0; playerRebs[p.number] = 0; playerStls[p.number] = 0; playerBlks[p.number] = 0; });
   shots.forEach(s => {
-    if (s.playerNum) {
-      playerPts[s.playerNum] = (playerPts[s.playerNum] || 0) + getPoints(s);
-      playerCounts[s.playerNum] = (playerCounts[s.playerNum] || 0) + 1;
-    }
+    if (s.playerNum) { playerPts[s.playerNum] = (playerPts[s.playerNum] || 0) + getPoints(s); playerCounts[s.playerNum] = (playerCounts[s.playerNum] || 0) + 1; }
+    if (s.assistNum) { playerAssists[s.assistNum] = (playerAssists[s.assistNum] || 0) + 1; }
   });
   events.forEach(e => {
-    if (e.type === "foul") playerFouls[e.playerNum] = (playerFouls[e.playerNum] || 0) + 1;
-    if (e.type === "turnover") playerTOs[e.playerNum] = (playerTOs[e.playerNum] || 0) + 1;
+    if (e.type === "foul" && e.playerNum) playerFouls[e.playerNum] = (playerFouls[e.playerNum] || 0) + 1;
+    if (e.type === "turnover" && e.playerNum) playerTOs[e.playerNum] = (playerTOs[e.playerNum] || 0) + 1;
+    if (e.type === "rebound" && e.playerNum) playerRebs[e.playerNum] = (playerRebs[e.playerNum] || 0) + 1;
+    if (e.type === "steal" && e.playerNum) playerStls[e.playerNum] = (playerStls[e.playerNum] || 0) + 1;
+    if (e.type === "block" && e.playerNum) playerBlks[e.playerNum] = (playerBlks[e.playerNum] || 0) + 1;
   });
   const sortedPlayers = [...players].sort((a, b) => parseInt(a.number) - parseInt(b.number));
   const teamFouls = events.filter(e => e.type === "foul").length;
   const teamTOs = events.filter(e => e.type === "turnover").length;
+  const teamAssists = shots.filter(s => s.assistNum).length;
+  const teamRebs = events.filter(e => e.type === "rebound").length;
+  const teamStls = events.filter(e => e.type === "steal").length;
+  const teamBlks = events.filter(e => e.type === "block").length;
   const to60used = events.filter(e => e.type === "timeout" && e.duration === 60).length;
   const to30used = events.filter(e => e.type === "timeout" && e.duration === 30).length;
-  const to60left = 3 - to60used;
-  const to30left = 2 - to30used;
+  const to60left = 3 - to60used; const to30left = 2 - to30used;
   const qtrFouls = events.filter(e => e.type === "foul" && e.quarter === quarter).length;
   const inBonus = qtrFouls >= 5;
 
-  const handleZoneTap = useCallback((id) => {
-    if (!ftMode && !pending) setActiveZone(id);
-  }, [ftMode, pending]);
+  /* ─── OPP FOUL STATS ─── */
+  const oppFoulEvents = events.filter(e => e.type === "opp_foul");
+  const oppTotalFouls = oppFoulEvents.length;
+  const oppQtrFouls = oppFoulEvents.filter(e => e.quarter === quarter).length;
+  const oppInBonus = oppQtrFouls >= 5;
+  const oppFoulsByPlayer = {};
+  oppFoulEvents.forEach(e => { oppFoulsByPlayer[e.playerNum] = (oppFoulsByPlayer[e.playerNum] || 0) + 1; });
+  const oppFoulList = Object.entries(oppFoulsByPlayer).sort((a, b) => b[1] - a[1]);
+
+  /* ─── RECENT ACTIONS ─── */
+  const recentActions = [...shots, ...events].sort((a, b) => b.id - a.id).slice(0, 15);
+
+  /* ─── ACTION HANDLERS ─── */
+  const handleZoneTap = useCallback((id) => { if (!ftMode && !pending && !pendingAssist) setActiveZone(id); }, [ftMode, pending, pendingAssist]);
 
   const handleMakeMiss = (result) => {
-    if (pending) return;
+    if (pending || pendingAssist) return;
     if (ftMode) {
-      if (players.length === 0) {
-        const ns = [...shots, { result, id: Date.now(), isFT: true, quarter }];
-        setShots(ns); syncAll(ns, undefined, undefined); doFlash(result);
-      } else {
-        setPending({ type: "shot", result, isFT: true });
-      }
+      if (players.length === 0) { const ns = [...shots, { result, id: Date.now(), isFT: true, quarter }]; setShots(ns); syncAll(ns, undefined, undefined); doFlash(result); }
+      else { setPending({ type: "shot", result, isFT: true }); }
       return;
     }
     if (!activeZone) return;
-    if (players.length === 0) {
-      const ns = [...shots, { zone: activeZone, result, id: Date.now(), isFT: false, quarter }];
-      setShots(ns); syncAll(ns, undefined, undefined); doFlash(result); setActiveZone(null);
-    } else {
-      setPending({ type: "shot", result, zone: activeZone, isFT: false });
-    }
+    if (players.length === 0) { const ns = [...shots, { zone: activeZone, result, id: Date.now(), isFT: false, quarter }]; setShots(ns); syncAll(ns, undefined, undefined); doFlash(result); setActiveZone(null); }
+    else { setPending({ type: "shot", result, zone: activeZone, isFT: false }); }
   };
 
   const handleFoul = () => {
-    if (pending) return;
-    if (players.length === 0) {
-      const ne = [...events, { type: "foul", id: Date.now(), quarter }];
-      setEvents(ne); syncAll(undefined, ne, undefined);
-    } else {
-      setPending({ type: "foul" });
-    }
+    if (pending || pendingAssist) return;
+    if (players.length === 0) { const ne = [...events, { type: "foul", id: Date.now(), quarter }]; setEvents(ne); syncAll(undefined, ne, undefined); }
+    else { setPending({ type: "foul" }); }
   };
 
   const handleTurnover = () => {
-    if (pending) return;
-    if (players.length === 0) {
-      const ne = [...events, { type: "turnover", id: Date.now(), quarter }];
-      setEvents(ne); syncAll(undefined, ne, undefined);
-    } else {
-      setPending({ type: "turnover" });
-    }
+    if (pending || pendingAssist) return;
+    if (players.length === 0) { const ne = [...events, { type: "turnover", id: Date.now(), quarter }]; setEvents(ne); syncAll(undefined, ne, undefined); }
+    else { setPending({ type: "turnover" }); }
+  };
+
+  const handleRebound = () => {
+    if (pending || pendingAssist) return;
+    if (players.length === 0) { const ne = [...events, { type: "rebound", id: Date.now(), quarter }]; setEvents(ne); syncAll(undefined, ne, undefined); }
+    else { setPending({ type: "rebound" }); }
+  };
+
+  const handleSteal = () => {
+    if (pending || pendingAssist) return;
+    if (players.length === 0) { const ne = [...events, { type: "steal", id: Date.now(), quarter }]; setEvents(ne); syncAll(undefined, ne, undefined); }
+    else { setPending({ type: "steal" }); }
+  };
+
+  const handleBlock = () => {
+    if (pending || pendingAssist) return;
+    if (players.length === 0) { const ne = [...events, { type: "block", id: Date.now(), quarter }]; setEvents(ne); syncAll(undefined, ne, undefined); }
+    else { setPending({ type: "block" }); }
   };
 
   const handleTimeout = (duration) => {
     const left = duration === 60 ? to60left : to30left;
     if (left <= 0) return;
     const ne = [...events, { type: "timeout", duration, id: Date.now(), quarter }];
-    setEvents(ne); syncAll(undefined, ne, undefined);
-    setShowTOPicker(false);
+    setEvents(ne); syncAll(undefined, ne, undefined); setShowTOPicker(false);
+  };
+
+  const handleOppFoul = (num) => {
+    if (!num) return;
+    const ne = [...events, { type: "opp_foul", playerNum: String(num), id: Date.now(), quarter }];
+    setEvents(ne); syncAll(undefined, ne, undefined); setOppFoulNum("");
   };
 
   const pickPlayer = (num) => {
     if (!pending) return;
     if (pending.type === "shot") {
-      const ns = [...shots, { result: pending.result, id: Date.now(), isFT: pending.isFT, zone: pending.zone, playerNum: num, quarter }];
+      const shotId = Date.now();
+      const newShot = { result: pending.result, id: shotId, isFT: pending.isFT, zone: pending.zone, playerNum: num, quarter };
+      const ns = [...shots, newShot];
       setShots(ns); syncAll(ns, undefined, undefined); doFlash(pending.result); setActiveZone(null);
+      // After a make (not FT), ask for assist if there are other players
+      if (pending.result === "make" && players.length > 1) {
+        setPending(null);
+        setPendingAssist({ shotId, scorerNum: num });
+        return;
+      }
     } else if (pending.type === "foul") {
       const ne = [...events, { type: "foul", playerNum: num, id: Date.now(), quarter }];
       setEvents(ne); syncAll(undefined, ne, undefined);
       const newCount = (playerFouls[num] || 0) + 1;
-      if (newCount >= 4) {
-        const p = players.find(x => x.number === num);
-        setFoulWarning((p ? p.name : "#" + num) + " has " + newCount + " fouls!");
-        setTimeout(() => setFoulWarning(null), 3500);
-      }
+      if (newCount >= 4) { const p = players.find(x => x.number === num); setFoulWarning((p ? p.name : "#" + num) + " has " + newCount + " fouls!"); setTimeout(() => setFoulWarning(null), 3500); }
     } else if (pending.type === "turnover") {
-      const ne = [...events, { type: "turnover", playerNum: num, id: Date.now(), quarter }];
-      setEvents(ne); syncAll(undefined, ne, undefined);
+      const ne = [...events, { type: "turnover", playerNum: num, id: Date.now(), quarter }]; setEvents(ne); syncAll(undefined, ne, undefined);
+    } else if (pending.type === "rebound" || pending.type === "steal" || pending.type === "block") {
+      const ne = [...events, { type: pending.type, playerNum: num, id: Date.now(), quarter }]; setEvents(ne); syncAll(undefined, ne, undefined);
     }
     setPending(null);
   };
 
-  const advanceQuarter = () => {
-    const nq = (quarter + 1) % Q_LABELS.length;
-    setQuarter(nq); syncAll(undefined, undefined, nq);
+  const pickAssist = (num) => {
+    if (!pendingAssist) return;
+    const ns = shots.map(s => s.id === pendingAssist.shotId ? { ...s, assistNum: num } : s);
+    setShots(ns); syncAll(ns, undefined, undefined); setPendingAssist(null);
   };
 
-  const backQuarter = () => {
-    const nq = (quarter - 1 + Q_LABELS.length) % Q_LABELS.length;
-    setQuarter(nq); syncAll(undefined, undefined, nq);
-  };
+  const skipAssist = () => { setPendingAssist(null); };
 
-  const undo = () => {
-    const lastShot = shots.length > 0 ? shots[shots.length - 1] : null;
-    const lastEvent = events.length > 0 ? events[events.length - 1] : null;
-    if (!lastShot && !lastEvent) return;
-    const shotId = lastShot ? lastShot.id : 0;
-    const eventId = lastEvent ? lastEvent.id : 0;
-    if (shotId > eventId) {
-      const ns = shots.slice(0, -1);
-      setShots(ns); syncAll(ns, undefined, undefined);
-    } else {
-      const ne = events.slice(0, -1);
-      setEvents(ne); syncAll(undefined, ne, undefined);
-    }
+  const advanceQuarter = () => { const nq = (quarter + 1) % Q_LABELS.length; setQuarter(nq); syncAll(undefined, undefined, nq); };
+  const backQuarter = () => { const nq = (quarter - 1 + Q_LABELS.length) % Q_LABELS.length; setQuarter(nq); syncAll(undefined, undefined, nq); };
+
+  const deleteAction = (item) => {
+    if (item.result !== undefined) { const ns = shots.filter(s => s.id !== item.id); setShots(ns); syncAll(ns, undefined, undefined); }
+    else { const ne = events.filter(e => e.id !== item.id); setEvents(ne); syncAll(undefined, ne, undefined); }
     setActiveZone(null); setPending(null);
   };
 
-  const getZoneColor = (id) => {
-    const s = zoneStats[id]; if (!s || !s.total) return "rgba(255,255,255,0.04)";
-    const p = s.makes / s.total;
-    return p >= 0.5 ? "rgba(34,197,94,0.35)" : p >= 0.35 ? "rgba(250,204,21,0.3)" : "rgba(239,68,68,0.3)";
-  };
-  const getZoneBorder = (id) => {
-    if (activeZone === id) return "rgba(255,255,255,0.9)";
-    const s = zoneStats[id]; if (!s || !s.total) return "rgba(255,255,255,0.12)";
-    const p = s.makes / s.total;
-    return p >= 0.5 ? "rgba(34,197,94,0.7)" : p >= 0.35 ? "rgba(250,204,21,0.6)" : "rgba(239,68,68,0.6)";
-  };
-
+  /* ─── VISUAL HELPERS ─── */
+  const getZoneColor = (id) => { const s = zoneStats[id]; if (!s || !s.total) return "rgba(255,255,255,0.04)"; const p = s.makes / s.total; return p >= 0.5 ? "rgba(34,197,94,0.35)" : p >= 0.35 ? "rgba(250,204,21,0.3)" : "rgba(239,68,68,0.3)"; };
+  const getZoneBorder = (id) => { if (activeZone === id) return "rgba(255,255,255,0.9)"; const s = zoneStats[id]; if (!s || !s.total) return "rgba(255,255,255,0.12)"; const p = s.makes / s.total; return p >= 0.5 ? "rgba(34,197,94,0.7)" : p >= 0.35 ? "rgba(250,204,21,0.6)" : "rgba(239,68,68,0.6)"; };
   const flashBorder = flash === "make" ? "2px solid #22c55e" : flash === "miss" ? "2px solid #ef4444" : "2px solid transparent";
   const fmtDate = (iso) => { try { return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }); } catch (e) { return ""; } };
 
@@ -399,26 +392,26 @@ export default function App() {
   const pickerTitle = pending
     ? pending.type === "foul" ? "Who fouled?"
       : pending.type === "turnover" ? "Who turned it over?"
+      : pending.type === "rebound" ? "Who rebounded?"
+      : pending.type === "steal" ? "Who got the steal?"
+      : pending.type === "block" ? "Who blocked it?"
       : "Who took the shot?"
     : "";
   const pickerSubtext = pending
     ? pending.type === "shot"
       ? (pending.result === "make" ? "Make" : "Miss") + (pending.isFT ? " (FT)" : pending.zone ? " — " + (ZONES.find(z => z.id === pending.zone)?.label || "") : "")
-      : pending.type === "foul" ? "Personal Foul" : "Turnover"
+      : pending.type === "foul" ? "Personal Foul" : pending.type === "turnover" ? "Turnover" : pending.type === "rebound" ? "Rebound" : pending.type === "steal" ? "Steal" : "Block"
     : "";
   const pickerColor = pending
-    ? pending.type === "foul" ? "#f97316"
-      : pending.type === "turnover" ? "#a855f7"
-      : pending.result === "make" ? "#22c55e" : "#ef4444"
+    ? pending.type === "foul" ? "#f97316" : pending.type === "turnover" ? "#a855f7" : pending.type === "rebound" ? "#22c55e" : pending.type === "steal" ? "#3b82f6" : pending.type === "block" ? "#ec4899" : pending.result === "make" ? "#22c55e" : "#ef4444"
     : "#fff";
 
+  const anyPending = !!pending || !!pendingAssist;
+
   if (view === "loading") {
-    return (
-      <div style={{ ...SHELL, display: "flex", alignItems: "center", justifyContent: "center" }}>
-        <div style={{ color: "#555", fontSize: 14 }}>Loading...</div>
-      </div>
-    );
+    return (<div style={{ ...SHELL, display: "flex", alignItems: "center", justifyContent: "center" }}><div style={{ color: "#555", fontSize: 14 }}>Loading...</div></div>);
   }
+
   // ═══ ROSTER ═══
   if (view === "roster") {
     return (
@@ -441,9 +434,7 @@ export default function App() {
           </div>
         </div>
         <div style={{ padding: "0 16px", display: "flex", flexDirection: "column", gap: 6, marginBottom: 20 }}>
-          {players.length === 0 && (
-            <div style={{ color: "#444", fontSize: 13, padding: "16px 0", textAlign: "center" }}>No players yet — add jersey numbers above</div>
-          )}
+          {players.length === 0 && (<div style={{ color: "#444", fontSize: 13, padding: "16px 0", textAlign: "center" }}>No players yet — add jersey numbers above</div>)}
           {players.map(p => (
             <div key={p.number} style={{ display: "flex", alignItems: "center", gap: 12, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: "10px 14px" }}>
               <div style={{ ...JERSEY, width: 40, height: 40, fontSize: 18 }}>{p.number}</div>
@@ -453,12 +444,8 @@ export default function App() {
           ))}
         </div>
         <div style={{ padding: "0 16px" }}>
-          <button onClick={startSession} style={{ width: "100%", padding: "16px 0", borderRadius: 14, border: "none", fontSize: 16, fontWeight: 800, cursor: "pointer", background: "#facc15", color: "#000" }}>
-            Start Tracking →
-          </button>
-          <div style={{ textAlign: "center", fontSize: 11, color: "#555", marginTop: 8 }}>
-            {players.length === 0 ? "Track without players (team-level)" : players.length + " player" + (players.length !== 1 ? "s" : "")}
-          </div>
+          <button onClick={startSession} style={{ width: "100%", padding: "16px 0", borderRadius: 14, border: "none", fontSize: 16, fontWeight: 800, cursor: "pointer", background: "#facc15", color: "#000" }}>Start Tracking →</button>
+          <div style={{ textAlign: "center", fontSize: 11, color: "#555", marginTop: 8 }}>{players.length === 0 ? "Track without players (team-level)" : players.length + " player" + (players.length !== 1 ? "s" : "")}</div>
         </div>
       </div>
     );
@@ -469,89 +456,66 @@ export default function App() {
     return (
       <div style={SHELL}>
         <div style={{ padding: "20px 16px 12px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <div>
-            <div style={{ fontSize: 20, fontWeight: 800 }}>Shot Chart</div>
-            <div style={SUBHEAD}>Saved Sessions</div>
-          </div>
+          <div><div style={{ fontSize: 20, fontWeight: 800 }}>Shot Chart</div><div style={SUBHEAD}>Saved Sessions</div></div>
           <button onClick={() => { setPlayers([...DEFAULT_ROSTER]); setTeamName(""); setRName(""); setRNum(""); setView("roster"); }} style={ACCENT}>+ New Game</button>
         </div>
-        {dbStatus === "error" && (
-          <div style={{ margin: "0 16px 8px", padding: "8px 12px", background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.25)", borderRadius: 8, fontSize: 11, color: "#ef4444" }}>
-            ⚠ Database unavailable — using local storage only
-          </div>
-        )}
-        {dbStatus === "ok" && (
-          <div style={{ margin: "0 16px 8px", padding: "8px 12px", background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.2)", borderRadius: 8, fontSize: 11, color: "#22c55e" }}>
-            ✓ Connected — games auto-save & are shareable
-          </div>
-        )}
+        {dbStatus === "error" && (<div style={{ margin: "0 16px 8px", padding: "8px 12px", background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.25)", borderRadius: 8, fontSize: 11, color: "#ef4444" }}>⚠ Database unavailable — using local storage only</div>)}
+        {dbStatus === "ok" && (<div style={{ margin: "0 16px 8px", padding: "8px 12px", background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.2)", borderRadius: 8, fontSize: 11, color: "#22c55e" }}>✓ Connected — games auto-save & are shareable</div>)}
         {sessions.length === 0 ? (
-          <div style={{ textAlign: "center", padding: "60px 20px", color: "#444" }}>
-            <div style={{ fontSize: 40, marginBottom: 12 }}>🏀</div>
-            <div style={{ fontSize: 15, fontWeight: 600 }}>No sessions yet</div>
-          </div>
+          <div style={{ textAlign: "center", padding: "60px 20px", color: "#444" }}><div style={{ fontSize: 40, marginBottom: 12 }}>🏀</div><div style={{ fontSize: 15, fontWeight: 600 }}>No sessions yet</div></div>
         ) : (
           <div style={{ padding: "4px 16px 20px", display: "flex", flexDirection: "column", gap: 8 }}>
-
             {/* Season Stats Toggle */}
             {(() => {
               const allShots = sessions.flatMap(s => s.shots || []);
               const allEvents = sessions.flatMap(s => s.events || []);
               const numGames = sessions.length;
               if (allShots.length === 0 && allEvents.length === 0) return null;
-
-              const yFG = allShots.filter(s => !s.isFT);
-              const yFT = allShots.filter(s => s.isFT);
-              const yFGm = yFG.filter(s => s.result === "make").length;
-              const yFTm = yFT.filter(s => s.result === "make").length;
+              const yFG = allShots.filter(s => !s.isFT); const yFT = allShots.filter(s => s.isFT);
+              const yFGm = yFG.filter(s => s.result === "make").length; const yFTm = yFT.filter(s => s.result === "make").length;
               const yFGp = yFG.length > 0 ? Math.round(yFGm / yFG.length * 100) : 0;
               const yFTp = yFT.length > 0 ? Math.round(yFTm / yFT.length * 100) : 0;
               const yPts = allShots.reduce((sum, s) => sum + getPoints(s), 0);
               const yFouls = allEvents.filter(e => e.type === "foul").length;
               const yTOs = allEvents.filter(e => e.type === "turnover").length;
-              const y3 = yFG.filter(s => THREE_PT.has(s.zone));
-              const y3m = y3.filter(s => s.result === "make").length;
+              const yAst = allShots.filter(s => s.assistNum).length;
+              const yReb = allEvents.filter(e => e.type === "rebound").length;
+              const yStl = allEvents.filter(e => e.type === "steal").length;
+              const yBlk = allEvents.filter(e => e.type === "block").length;
+              const y3 = yFG.filter(s => THREE_PT.has(s.zone)); const y3m = y3.filter(s => s.result === "make").length;
               const y3p = y3.length > 0 ? Math.round(y3m / y3.length * 100) : 0;
-              const y2 = yFG.filter(s => !THREE_PT.has(s.zone));
-              const y2m = y2.filter(s => s.result === "make").length;
+              const y2 = yFG.filter(s => !THREE_PT.has(s.zone)); const y2m = y2.filter(s => s.result === "make").length;
               const y2p = y2.length > 0 ? Math.round(y2m / y2.length * 100) : 0;
-
               const pMap = {};
               sessions.forEach(s => {
-                (s.players || []).forEach(p => {
-                  if (!pMap[p.number]) pMap[p.number] = { number: p.number, name: p.name, games: 0, pts: 0, fgm: 0, fga: 0, ftm: 0, fta: 0, p3m: 0, p3a: 0, fouls: 0, tos: 0 };
-                });
-                const hasPlayer = (s.players || []).length > 0;
-                if (hasPlayer) {
+                (s.players || []).forEach(p => { if (!pMap[p.number]) pMap[p.number] = { number: p.number, name: p.name, games: 0, pts: 0, fgm: 0, fga: 0, ftm: 0, fta: 0, p3m: 0, p3a: 0, fouls: 0, tos: 0, ast: 0, reb: 0, stl: 0, blk: 0 }; });
+                if ((s.players || []).length > 0) {
                   (s.players || []).forEach(p => { pMap[p.number].games++; });
                   (s.shots || []).forEach(sh => {
                     if (!sh.playerNum || !pMap[sh.playerNum]) return;
-                    const pp = pMap[sh.playerNum];
-                    pp.pts += getPoints(sh);
+                    const pp = pMap[sh.playerNum]; pp.pts += getPoints(sh);
                     if (sh.isFT) { pp.fta++; if (sh.result === "make") pp.ftm++; }
                     else { pp.fga++; if (sh.result === "make") pp.fgm++; if (THREE_PT.has(sh.zone)) { pp.p3a++; if (sh.result === "make") pp.p3m++; } }
+                    if (sh.assistNum && pMap[sh.assistNum]) pMap[sh.assistNum].ast++;
                   });
                   (s.events || []).forEach(ev => {
                     if (!ev.playerNum || !pMap[ev.playerNum]) return;
                     if (ev.type === "foul") pMap[ev.playerNum].fouls++;
                     if (ev.type === "turnover") pMap[ev.playerNum].tos++;
+                    if (ev.type === "rebound") pMap[ev.playerNum].reb++;
+                    if (ev.type === "steal") pMap[ev.playerNum].stl++;
+                    if (ev.type === "block") pMap[ev.playerNum].blk++;
                   });
                 }
               });
               const pList = Object.values(pMap).sort((a, b) => parseInt(a.number) - parseInt(b.number));
-
               const yZone = {};
-              ZONES.forEach(z => {
-                const zs = yFG.filter(s => s.zone === z.id);
-                yZone[z.id] = { makes: zs.filter(s => s.result === "make").length, total: zs.length };
-              });
-
+              ZONES.forEach(z => { const zs = yFG.filter(s => s.zone === z.id); yZone[z.id] = { makes: zs.filter(s => s.result === "make").length, total: zs.length }; });
               return (
                 <>
                   <button onClick={() => setShowYearStats(p => !p)} style={{ background: showYearStats ? "rgba(250,204,21,0.12)" : "rgba(255,255,255,0.04)", border: "1px solid " + (showYearStats ? "rgba(250,204,21,0.25)" : "rgba(255,255,255,0.08)"), color: showYearStats ? "#facc15" : "#888", fontSize: 12, fontWeight: 700, padding: "10px 16px", borderRadius: 10, cursor: "pointer", textAlign: "center" }}>
                     {showYearStats ? "▾ Hide Season Stats" : "▸ Season Stats — " + numGames + " Game" + (numGames !== 1 ? "s" : "") + " · " + yPts + " Total Pts"}
                   </button>
-
                   {showYearStats && (
                     <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 4 }}>
                       <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 12, padding: 14 }}>
@@ -562,18 +526,21 @@ export default function App() {
                           <div style={{ textAlign: "center" }}><div style={{ fontSize: 16, fontWeight: 800, color: "#f97316" }}>{yFouls}</div><div style={{ fontSize: 8, color: "#666" }}>FOULS</div></div>
                           <div style={{ textAlign: "center" }}><div style={{ fontSize: 16, fontWeight: 800, color: "#a855f7" }}>{yTOs}</div><div style={{ fontSize: 8, color: "#666" }}>TURNOVERS</div></div>
                         </div>
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 6, marginBottom: 10 }}>
+                          <div style={{ textAlign: "center" }}><div style={{ fontSize: 16, fontWeight: 800, color: "#22c55e" }}>{yAst}</div><div style={{ fontSize: 8, color: "#666" }}>ASSISTS</div></div>
+                          <div style={{ textAlign: "center" }}><div style={{ fontSize: 16, fontWeight: 800, color: "#22c55e" }}>{yReb}</div><div style={{ fontSize: 8, color: "#666" }}>REBOUNDS</div></div>
+                          <div style={{ textAlign: "center" }}><div style={{ fontSize: 16, fontWeight: 800, color: "#3b82f6" }}>{yStl}</div><div style={{ fontSize: 8, color: "#666" }}>STEALS</div></div>
+                          <div style={{ textAlign: "center" }}><div style={{ fontSize: 16, fontWeight: 800, color: "#ec4899" }}>{yBlk}</div><div style={{ fontSize: 8, color: "#666" }}>BLOCKS</div></div>
+                        </div>
                         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
                           <div style={{ textAlign: "center", background: "rgba(255,255,255,0.03)", borderRadius: 8, padding: "8px 4px" }}><div style={{ fontSize: 18, fontWeight: 800, color: yFGp >= 50 ? "#22c55e" : yFGp >= 35 ? "#facc15" : yFG.length ? "#ef4444" : "#555" }}>{yFG.length ? yFGp + "%" : "—"}</div><div style={{ fontSize: 8, color: "#666" }}>FG {yFGm}/{yFG.length}</div></div>
                           <div style={{ textAlign: "center", background: "rgba(255,255,255,0.03)", borderRadius: 8, padding: "8px 4px" }}><div style={{ fontSize: 18, fontWeight: 800, color: y3p >= 35 ? "#22c55e" : y3p >= 25 ? "#facc15" : y3.length ? "#ef4444" : "#555" }}>{y3.length ? y3p + "%" : "—"}</div><div style={{ fontSize: 8, color: "#666" }}>3PT {y3m}/{y3.length}</div></div>
                           <div style={{ textAlign: "center", background: "rgba(255,255,255,0.03)", borderRadius: 8, padding: "8px 4px" }}><div style={{ fontSize: 18, fontWeight: 800, color: yFTp >= 70 ? "#818cf8" : yFTp >= 50 ? "#facc15" : yFT.length ? "#ef4444" : "#555" }}>{yFT.length ? yFTp + "%" : "—"}</div><div style={{ fontSize: 8, color: "#666" }}>FT {yFTm}/{yFT.length}</div></div>
                         </div>
                         <div style={{ marginTop: 8, textAlign: "center", background: "rgba(255,255,255,0.03)", borderRadius: 8, padding: "6px 4px" }}>
-                          <span style={{ fontSize: 12, color: "#888" }}>2PT: </span>
-                          <span style={{ fontSize: 14, fontWeight: 800, color: y2p >= 50 ? "#22c55e" : y2p >= 35 ? "#facc15" : y2.length ? "#ef4444" : "#555" }}>{y2.length ? y2p + "%" : "—"}</span>
-                          <span style={{ fontSize: 10, color: "#666" }}> ({y2m}/{y2.length})</span>
+                          <span style={{ fontSize: 12, color: "#888" }}>2PT: </span><span style={{ fontSize: 14, fontWeight: 800, color: y2p >= 50 ? "#22c55e" : y2p >= 35 ? "#facc15" : y2.length ? "#ef4444" : "#555" }}>{y2.length ? y2p + "%" : "—"}</span><span style={{ fontSize: 10, color: "#666" }}> ({y2m}/{y2.length})</span>
                         </div>
                       </div>
-
                       {pList.length > 0 && (
                         <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 12, padding: 14 }}>
                           <div style={SECHEAD}>Player Season Stats</div>
@@ -593,40 +560,26 @@ export default function App() {
                                       {p.p3a > 0 ? " · 3PT " + p.p3m + "/" + p.p3a + " (" + p3p + "%)" : ""}
                                       {p.fta > 0 ? " · FT " + p.ftm + "/" + p.fta + " (" + ftp + "%)" : ""}
                                     </div>
-                                    {(p.fouls > 0 || p.tos > 0) && (
-                                      <div style={{ fontSize: 9, color: "#666", marginTop: 1 }}>
-                                        {p.fouls > 0 ? p.fouls + " fouls" : ""}{p.fouls > 0 && p.tos > 0 ? " · " : ""}{p.tos > 0 ? p.tos + " TO" : ""}
-                                      </div>
-                                    )}
+                                    <div style={{ fontSize: 9, color: "#666", marginTop: 1 }}>
+                                      {p.ast > 0 ? p.ast + " ast" : ""}{p.ast > 0 && p.reb > 0 ? " · " : ""}{p.reb > 0 ? p.reb + " reb" : ""}{(p.ast > 0 || p.reb > 0) && p.stl > 0 ? " · " : ""}{p.stl > 0 ? p.stl + " stl" : ""}{(p.ast > 0 || p.reb > 0 || p.stl > 0) && p.blk > 0 ? " · " : ""}{p.blk > 0 ? p.blk + " blk" : ""}
+                                      {(p.fouls > 0 || p.tos > 0) ? ((p.ast > 0 || p.reb > 0 || p.stl > 0 || p.blk > 0) ? " · " : "") : ""}
+                                      {p.fouls > 0 ? p.fouls + " fouls" : ""}{p.fouls > 0 && p.tos > 0 ? " · " : ""}{p.tos > 0 ? p.tos + " TO" : ""}
+                                    </div>
                                   </div>
-                                  <div style={{ textAlign: "right" }}>
-                                    <div style={{ fontSize: 20, fontWeight: 900, color: "#facc15" }}>{p.pts}</div>
-                                    <div style={{ fontSize: 8, color: "#666" }}>{ppg} PPG</div>
-                                  </div>
+                                  <div style={{ textAlign: "right" }}><div style={{ fontSize: 20, fontWeight: 900, color: "#facc15" }}>{p.pts}</div><div style={{ fontSize: 8, color: "#666" }}>{ppg} PPG</div></div>
                                 </div>
                               );
                             })}
                           </div>
                         </div>
                       )}
-
                       {yFG.length > 0 && (
                         <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 12, padding: 14 }}>
                           <div style={SECHEAD}>Season Zone Breakdown</div>
                           <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                             {ZONES.filter(z => yZone[z.id].total > 0).map(z => {
                               const s = yZone[z.id]; const p = Math.round(s.makes / s.total * 100);
-                              return (
-                                <div key={z.id} style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                                  <div style={{ width: 80, fontSize: 12, color: "#888", flexShrink: 0 }}>{z.label}</div>
-                                  <div style={{ flex: 1, height: 8, borderRadius: 4, background: "rgba(255,255,255,0.06)", overflow: "hidden" }}>
-                                    <div style={{ height: "100%", width: p + "%", borderRadius: 4, background: p >= 50 ? "#22c55e" : p >= 35 ? "#facc15" : "#ef4444" }} />
-                                  </div>
-                                  <div style={{ width: 60, textAlign: "right", fontSize: 12, color: "#ccc", fontWeight: 700 }}>
-                                    {s.makes}/{s.total} <span style={{ color: "#666", fontWeight: 400 }}>({p}%)</span>
-                                  </div>
-                                </div>
-                              );
+                              return (<div key={z.id} style={{ display: "flex", alignItems: "center", gap: 8 }}><div style={{ width: 80, fontSize: 12, color: "#888", flexShrink: 0 }}>{z.label}</div><div style={{ flex: 1, height: 8, borderRadius: 4, background: "rgba(255,255,255,0.06)", overflow: "hidden" }}><div style={{ height: "100%", width: p + "%", borderRadius: 4, background: p >= 50 ? "#22c55e" : p >= 35 ? "#facc15" : "#ef4444" }} /></div><div style={{ width: 60, textAlign: "right", fontSize: 12, color: "#ccc", fontWeight: 700 }}>{s.makes}/{s.total} <span style={{ color: "#666", fontWeight: 400 }}>({p}%)</span></div></div>);
                             })}
                           </div>
                         </div>
@@ -636,14 +589,12 @@ export default function App() {
                 </>
               );
             })()}
-
             {/* Game list */}
             {sessions.map(s => {
               const all = s.shots || []; const ev = s.events || [];
-              const sFG = all.filter(x => !x.isFT); const sFT = all.filter(x => x.isFT);
-              const sFGm = sFG.filter(x => x.result === "make").length; const sFGt = sFG.length;
+              const sFG = all.filter(x => !x.isFT); const sFGm = sFG.filter(x => x.result === "make").length; const sFGt = sFG.length;
               const sFGp = sFGt ? Math.round(sFGm / sFGt * 100) : 0;
-              const sFTm = sFT.filter(x => x.result === "make").length; const sFTt = sFT.length;
+              const sFTf = all.filter(x => x.isFT); const sFTm = sFTf.filter(x => x.result === "make").length; const sFTt = sFTf.length;
               const sFTp = sFTt ? Math.round(sFTm / sFTt * 100) : 0;
               const sPts = all.reduce((sum, x) => sum + getPoints(x), 0);
               const sFouls = ev.filter(x => x.type === "foul").length;
@@ -657,17 +608,9 @@ export default function App() {
                       {(s.players || []).length > 0 && <div style={{ fontSize: 10, color: "#555", marginTop: 2 }}>{s.players.length} players</div>}
                     </div>
                     <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-                      <div style={{ textAlign: "center" }}>
-                        <div style={{ fontSize: 20, fontWeight: 800, color: "#facc15" }}>{sPts}</div>
-                        <div style={{ fontSize: 8, color: "#666", letterSpacing: 1 }}>PTS</div>
-                      </div>
-                      <div style={{ textAlign: "right" }}>
-                        <div style={{ fontSize: 14, fontWeight: 800, color: sFGp >= 50 ? "#22c55e" : sFGp >= 35 ? "#facc15" : sFGt ? "#ef4444" : "#555" }}>{sFGt ? sFGp + "%" : "—"}</div>
-                        <div style={{ fontSize: 9, color: "#666" }}>FG {sFGm}/{sFGt}</div>
-                      </div>
-                      <button onClick={e => { e.stopPropagation(); shareGame(s.id); }} style={{ background: "none", border: "none", color: shareMsg === s.id ? "#22c55e" : "#facc15", fontSize: 13, cursor: "pointer", padding: "4px" }}>
-                        {shareMsg === s.id ? "✓" : "🔗"}
-                      </button>
+                      <div style={{ textAlign: "center" }}><div style={{ fontSize: 20, fontWeight: 800, color: "#facc15" }}>{sPts}</div><div style={{ fontSize: 8, color: "#666", letterSpacing: 1 }}>PTS</div></div>
+                      <div style={{ textAlign: "right" }}><div style={{ fontSize: 14, fontWeight: 800, color: sFGp >= 50 ? "#22c55e" : sFGp >= 35 ? "#facc15" : sFGt ? "#ef4444" : "#555" }}>{sFGt ? sFGp + "%" : "—"}</div><div style={{ fontSize: 9, color: "#666" }}>FG {sFGm}/{sFGt}</div></div>
+                      <button onClick={e => { e.stopPropagation(); shareGame(s.id); }} style={{ background: "none", border: "none", color: shareMsg === s.id ? "#22c55e" : "#facc15", fontSize: 13, cursor: "pointer", padding: "4px" }}>{shareMsg === s.id ? "✓" : "🔗"}</button>
                       <button onClick={e => deleteSession(s.id, e)} style={{ background: "none", border: "none", color: "#555", fontSize: 18, cursor: "pointer", padding: "4px 2px" }}>×</button>
                     </div>
                   </div>
@@ -686,6 +629,7 @@ export default function App() {
       </div>
     );
   }
+
   // ═══ TRACKER ═══
   const canRecord = ftMode || activeZone;
   const totalPts = shots.reduce((sum, s) => sum + getPoints(s), 0);
@@ -718,6 +662,24 @@ export default function App() {
         </div>
       )}
 
+      {/* Assist Picker Overlay */}
+      {pendingAssist && (
+        <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.88)", zIndex: 100, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 20 }}>
+          <div style={{ fontSize: 12, color: "#888", marginBottom: 4, letterSpacing: 1, textTransform: "uppercase" }}>Make recorded</div>
+          <div style={{ fontSize: 18, fontWeight: 800, marginBottom: 20, color: "#22c55e" }}>Assisted by?</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, width: "100%", maxWidth: 360, marginBottom: 20 }}>
+            {sortedPlayers.filter(p => p.number !== pendingAssist.scorerNum).map(p => (
+              <button key={p.number} onClick={() => pickAssist(p.number)} style={{ background: "rgba(255,255,255,0.08)", border: "2px solid rgba(255,255,255,0.15)", borderRadius: 14, padding: "12px 8px 8px", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 1 }}>
+                <div style={{ fontSize: 28, fontWeight: 900, color: "#facc15", lineHeight: 1 }}>{p.number}</div>
+                <div style={{ fontSize: 9, color: "#aaa", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 80 }}>{p.name}</div>
+                {(playerAssists[p.number] || 0) > 0 && <div style={{ fontSize: 9, color: "#22c55e", marginTop: 2 }}>{playerAssists[p.number]} ast</div>}
+              </button>
+            ))}
+          </div>
+          <button onClick={skipAssist} style={{ background: "none", border: "1px solid rgba(255,255,255,0.2)", color: "#888", padding: "10px 28px", borderRadius: 8, cursor: "pointer", fontSize: 13 }}>Skip</button>
+        </div>
+      )}
+
       {/* Timeout Picker Overlay */}
       {showTOPicker && (
         <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.88)", zIndex: 100, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 20 }}>
@@ -736,39 +698,78 @@ export default function App() {
         </div>
       )}
 
+      {/* Opp Foul Picker Overlay */}
+      {showOppFoulPicker && (
+        <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.88)", zIndex: 100, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 20 }}>
+          <div style={{ fontSize: 18, fontWeight: 800, marginBottom: 20, color: "#ef4444" }}>Opponent Foul</div>
+          <div style={{ display: "flex", gap: 8, marginBottom: 20, width: "100%", maxWidth: 280 }}>
+            <input value={oppFoulNum} onChange={e => setOppFoulNum(e.target.value.replace(/\D/g, "").slice(0, 3))} placeholder="Opp #" style={{ ...INP, width: 80, textAlign: "center", fontSize: 20, fontWeight: 800 }} inputMode="numeric" autoFocus />
+            <button onClick={() => { if (oppFoulNum.trim()) handleOppFoul(oppFoulNum.trim()); }} disabled={!oppFoulNum.trim()} style={{ flex: 1, padding: "12px 0", borderRadius: 10, border: "none", fontSize: 14, fontWeight: 700, cursor: oppFoulNum.trim() ? "pointer" : "default", background: oppFoulNum.trim() ? "#ef4444" : "rgba(239,68,68,0.15)", color: oppFoulNum.trim() ? "#fff" : "rgba(239,68,68,0.4)" }}>Add Foul</button>
+          </div>
+          {oppFoulList.length > 0 && (
+            <div style={{ width: "100%", maxWidth: 280, marginBottom: 16 }}>
+              <div style={{ fontSize: 10, color: "#666", letterSpacing: 1, textTransform: "uppercase", marginBottom: 8, textAlign: "center" }}>Tap to add another foul</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {oppFoulList.map(([num, count]) => (
+                  <button key={num} onClick={() => handleOppFoul(num)} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.25)", borderRadius: 10, padding: "10px 14px", cursor: "pointer", width: "100%" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <div style={{ ...JERSEY, width: 34, height: 34, fontSize: 14, background: "rgba(239,68,68,0.15)", border: "1px solid rgba(239,68,68,0.3)", color: "#ef4444" }}>{num}</div>
+                      <span style={{ color: "#ccc", fontSize: 13, fontWeight: 600 }}>#{num}</span>
+                    </div>
+                    <span style={{ color: count >= 4 ? "#ef4444" : "#f97316", fontSize: 14, fontWeight: 800 }}>{count} foul{count !== 1 ? "s" : ""}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          <button onClick={() => { setShowOppFoulPicker(false); setOppFoulNum(""); }} style={{ background: "none", border: "1px solid rgba(255,255,255,0.2)", color: "#888", padding: "10px 28px", borderRadius: 8, cursor: "pointer", fontSize: 13 }}>Close</button>
+        </div>
+      )}
+
       {/* Header */}
       <div style={{ padding: "12px 16px 4px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div>
-          <div style={{ display: "flex", alignItems: "center" }}>
-            <button onClick={() => setView("history")} style={LINK}>← All Sessions</button>
-            <StatusBadge />
-          </div>
+          <div style={{ display: "flex", alignItems: "center" }}><button onClick={() => setView("history")} style={LINK}>← All Sessions</button><StatusBadge /></div>
           {editName ? (
             <input autoFocus value={teamName} onChange={e => { setTeamName(e.target.value); setSessions(p => p.map(s => s.id === curId ? { ...s, teamName: e.target.value, team_name: e.target.value } : s)); }} onBlur={() => { setEditName(false); const g = sessions.find(s => s.id === curId); if (g) saveToDb(g); }} onKeyDown={e => e.key === "Enter" && setEditName(false)} placeholder="Team name" style={{ background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.2)", color: "#fff", fontSize: 16, fontWeight: 700, padding: "4px 10px", borderRadius: 6, outline: "none", width: 180, marginTop: 4, display: "block" }} />
           ) : (
-            <div onClick={() => setEditName(true)} style={{ fontSize: 16, fontWeight: 700, color: teamName ? "#fff" : "#555", cursor: "pointer", marginTop: 2 }}>
-              {teamName || "Tap to set name"}<span style={{ fontSize: 11, color: "#444", marginLeft: 6 }}>✎</span>
-            </div>
+            <div onClick={() => setEditName(true)} style={{ fontSize: 16, fontWeight: 700, color: teamName ? "#fff" : "#555", cursor: "pointer", marginTop: 2 }}>{teamName || "Tap to set name"}<span style={{ fontSize: 11, color: "#444", marginLeft: 6 }}>✎</span></div>
           )}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
           <button onClick={backQuarter} style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", color: "#888", fontSize: 11, fontWeight: 700, padding: "6px 6px", borderRadius: 6, cursor: "pointer" }}>◂</button>
           <button onClick={advanceQuarter} style={{ background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.15)", color: "#facc15", fontSize: 13, fontWeight: 800, padding: "6px 12px", borderRadius: 8, cursor: "pointer", minWidth: 42, textAlign: "center" }}>{Q_LABELS[quarter]}</button>
-          <button onClick={undo} style={BTN}>Undo</button>
+          <button onClick={() => setShowRecent(p => !p)} style={{ ...BTN, background: showRecent ? "rgba(250,204,21,0.12)" : BTN.background, color: showRecent ? "#facc15" : BTN.color, border: showRecent ? "1px solid rgba(250,204,21,0.25)" : BTN.border }}>Recent</button>
         </div>
       </div>
 
       {/* Foul Warning Banner */}
-      {foulWarning && (
-        <div style={{ margin: "0 16px 4px", padding: "8px 12px", background: "rgba(239,68,68,0.15)", border: "1px solid rgba(239,68,68,0.4)", borderRadius: 8, fontSize: 13, fontWeight: 700, color: "#ef4444", textAlign: "center" }}>
-          ⚠ {foulWarning}
-        </div>
-      )}
+      {foulWarning && (<div style={{ margin: "0 16px 4px", padding: "8px 12px", background: "rgba(239,68,68,0.15)", border: "1px solid rgba(239,68,68,0.4)", borderRadius: 8, fontSize: 13, fontWeight: 700, color: "#ef4444", textAlign: "center" }}>⚠ {foulWarning}</div>)}
+      {/* Own Team Bonus Banner */}
+      {inBonus && (<div style={{ margin: "0 16px 4px", padding: "6px 12px", background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.25)", borderRadius: 8, fontSize: 11, fontWeight: 700, color: "#ef4444", textAlign: "center" }}>BONUS — {qtrFouls} team fouls in {Q_LABELS[quarter]}</div>)}
+      {/* Opponent Bonus Banner */}
+      {oppInBonus && (<div style={{ margin: "0 16px 4px", padding: "6px 12px", background: "rgba(34,197,94,0.1)", border: "1px solid rgba(34,197,94,0.25)", borderRadius: 8, fontSize: 11, fontWeight: 700, color: "#22c55e", textAlign: "center" }}>OPP BONUS — {oppQtrFouls} opponent fouls in {Q_LABELS[quarter]}</div>)}
 
-      {/* Bonus Banner */}
-      {inBonus && (
-        <div style={{ margin: "0 16px 4px", padding: "6px 12px", background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.25)", borderRadius: 8, fontSize: 11, fontWeight: 700, color: "#ef4444", textAlign: "center" }}>
-          BONUS — {qtrFouls} team fouls in {Q_LABELS[quarter]}
+      {/* Recent Actions Panel */}
+      {showRecent && (
+        <div style={{ margin: "0 16px 8px", background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, overflow: "hidden" }}>
+          <div style={{ padding: "8px 12px 6px", fontSize: 10, color: "#555", letterSpacing: 1, textTransform: "uppercase" }}>Last {Math.min(recentActions.length, 15)} Actions</div>
+          {recentActions.length === 0 ? (<div style={{ padding: "12px 12px 14px", fontSize: 12, color: "#444", textAlign: "center" }}>No actions yet</div>) : (
+            <div style={{ maxHeight: 260, overflowY: "auto" }}>
+              {recentActions.map((item, i) => {
+                const desc = describeAction(item, players);
+                const isShot = item.result !== undefined;
+                const dotColor = isShot ? (item.result === "make" ? "#22c55e" : "#ef4444") : item.type === "foul" ? "#f97316" : item.type === "opp_foul" ? "#ef4444" : item.type === "turnover" ? "#a855f7" : item.type === "rebound" ? "#22c55e" : item.type === "steal" ? "#3b82f6" : item.type === "block" ? "#ec4899" : "#888";
+                return (
+                  <div key={item.id + "-" + i} style={{ display: "flex", alignItems: "center", padding: "7px 12px", borderTop: i > 0 ? "1px solid rgba(255,255,255,0.04)" : "none" }}>
+                    <div style={{ width: 6, height: 6, borderRadius: 3, background: dotColor, flexShrink: 0, marginRight: 8 }} />
+                    <div style={{ flex: 1, fontSize: 11, color: "#aaa", lineHeight: 1.3 }}>{desc}</div>
+                    <button onClick={() => deleteAction(item)} style={{ background: "none", border: "none", color: "#555", fontSize: 16, cursor: "pointer", padding: "2px 4px", marginLeft: 6, lineHeight: 1 }}>✕</button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 
@@ -802,67 +803,44 @@ export default function App() {
             return (
               <g key={z.id} onClick={() => handleZoneTap(z.id)} style={{ cursor: "pointer" }}>
                 <path d={z.path} fill={isActive ? "rgba(255,255,255,0.15)" : getZoneColor(z.id)} stroke={getZoneBorder(z.id)} strokeWidth={isActive ? 2 : 1} style={{ transition: "fill 0.2s, stroke 0.2s" }} />
-                {s && s.total > 0 ? (
-                  <>
-                    <text x={z.cx} y={z.cy - 4} textAnchor="middle" fill="#fff" fontSize="16" fontWeight="800" style={{ pointerEvents: "none" }}>{s.makes}/{s.total}</text>
-                    <text x={z.cx} y={z.cy + 12} textAnchor="middle" fill={pct >= 50 ? "#22c55e" : pct >= 35 ? "#facc15" : "#ef4444"} fontSize="11" fontWeight="600" style={{ pointerEvents: "none" }}>{pct}%</text>
-                  </>
-                ) : (
-                  <text x={z.cx} y={z.cy + 4} textAnchor="middle" fill="rgba(255,255,255,0.2)" fontSize="10" style={{ pointerEvents: "none" }}>{z.label}</text>
-                )}
+                {s && s.total > 0 ? (<><text x={z.cx} y={z.cy - 4} textAnchor="middle" fill="#fff" fontSize="16" fontWeight="800" style={{ pointerEvents: "none" }}>{s.makes}/{s.total}</text><text x={z.cx} y={z.cy + 12} textAnchor="middle" fill={pct >= 50 ? "#22c55e" : pct >= 35 ? "#facc15" : "#ef4444"} fontSize="11" fontWeight="600" style={{ pointerEvents: "none" }}>{pct}%</text></>
+                ) : (<text x={z.cx} y={z.cy + 4} textAnchor="middle" fill="rgba(255,255,255,0.2)" fontSize="10" style={{ pointerEvents: "none" }}>{z.label}</text>)}
               </g>
             );
           })}
         </svg>
       </div>
 
-      {ftMode && (
-        <div style={{ textAlign: "center", padding: "4px 16px 0" }}>
-          <span style={{ color: "#818cf8", fontSize: 12, fontWeight: 600 }}>Free Throw mode</span>
-        </div>
-      )}
-      {!ftMode && activeZone && (
-        <div style={{ textAlign: "center", padding: "0 16px 6px" }}>
-          <span style={{ color: "#facc15", fontSize: 12, fontWeight: 600 }}>{ZONES.find(z => z.id === activeZone)?.label}</span>
-          <span style={{ color: "#444", fontSize: 12 }}> — tap Make or Miss</span>
-        </div>
-      )}
+      {ftMode && (<div style={{ textAlign: "center", padding: "4px 16px 0" }}><span style={{ color: "#818cf8", fontSize: 12, fontWeight: 600 }}>Free Throw mode</span></div>)}
+      {!ftMode && activeZone && (<div style={{ textAlign: "center", padding: "0 16px 6px" }}><span style={{ color: "#facc15", fontSize: 12, fontWeight: 600 }}>{ZONES.find(z => z.id === activeZone)?.label}</span><span style={{ color: "#444", fontSize: 12 }}> — tap Make or Miss</span></div>)}
 
-      {/* Action row */}
-      <div style={{ padding: "8px 16px 0", display: "flex", justifyContent: "center", gap: 8 }}>
-        <button onClick={() => { setFtMode(p => !p); setActiveZone(null); setPending(null); }} style={{ background: ftMode ? "#818cf8" : "rgba(129,140,248,0.12)", border: ftMode ? "none" : "1px solid rgba(129,140,248,0.3)", color: ftMode ? "#000" : "#818cf8", fontSize: 12, fontWeight: 700, padding: "7px 16px", borderRadius: 8, cursor: "pointer", transition: "all 0.2s" }}>
-          {ftMode ? "🏀 FT MODE ON" : "Free Throw"}
-        </button>
-        <button onClick={handleFoul} disabled={!!pending} style={{ background: "rgba(249,115,22,0.12)", border: "1px solid rgba(249,115,22,0.3)", color: pending ? "rgba(249,115,22,0.3)" : "#f97316", fontSize: 12, fontWeight: 700, padding: "7px 14px", borderRadius: 8, cursor: pending ? "default" : "pointer" }}>
-          Foul
-        </button>
-        <button onClick={handleTurnover} disabled={!!pending} style={{ background: "rgba(168,85,247,0.12)", border: "1px solid rgba(168,85,247,0.3)", color: pending ? "rgba(168,85,247,0.3)" : "#a855f7", fontSize: 12, fontWeight: 700, padding: "7px 14px", borderRadius: 8, cursor: pending ? "default" : "pointer" }}>
-          TO
-        </button>
-        <button onClick={() => setShowTOPicker(true)} disabled={!!pending || (to60left <= 0 && to30left <= 0)} style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.15)", color: pending || (to60left <= 0 && to30left <= 0) ? "rgba(255,255,255,0.2)" : "#ccc", fontSize: 11, fontWeight: 700, padding: "7px 10px", borderRadius: 8, cursor: pending ? "default" : "pointer" }}>
-          ⏱ {to60left + to30left}
-        </button>
+      {/* Action row 1 */}
+      <div style={{ padding: "8px 16px 0", display: "flex", justifyContent: "center", gap: 5 }}>
+        <button onClick={() => { setFtMode(p => !p); setActiveZone(null); setPending(null); }} style={{ background: ftMode ? "#818cf8" : "rgba(129,140,248,0.12)", border: ftMode ? "none" : "1px solid rgba(129,140,248,0.3)", color: ftMode ? "#000" : "#818cf8", fontSize: 11, fontWeight: 700, padding: "7px 10px", borderRadius: 8, cursor: "pointer", transition: "all 0.2s" }}>{ftMode ? "🏀 FT ON" : "FT"}</button>
+        <button onClick={handleFoul} disabled={anyPending} style={{ background: "rgba(249,115,22,0.12)", border: "1px solid rgba(249,115,22,0.3)", color: anyPending ? "rgba(249,115,22,0.3)" : "#f97316", fontSize: 11, fontWeight: 700, padding: "7px 10px", borderRadius: 8, cursor: anyPending ? "default" : "pointer" }}>Foul</button>
+        <button onClick={() => { if (!anyPending) setShowOppFoulPicker(true); }} disabled={anyPending} style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.25)", color: anyPending ? "rgba(239,68,68,0.2)" : "#ef4444", fontSize: 11, fontWeight: 700, padding: "7px 8px", borderRadius: 8, cursor: anyPending ? "default" : "pointer" }}>Opp Foul</button>
+        <button onClick={handleTurnover} disabled={anyPending} style={{ background: "rgba(168,85,247,0.12)", border: "1px solid rgba(168,85,247,0.3)", color: anyPending ? "rgba(168,85,247,0.3)" : "#a855f7", fontSize: 11, fontWeight: 700, padding: "7px 10px", borderRadius: 8, cursor: anyPending ? "default" : "pointer" }}>TO</button>
+        <button onClick={() => setShowTOPicker(true)} disabled={anyPending || (to60left <= 0 && to30left <= 0)} style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.15)", color: anyPending || (to60left <= 0 && to30left <= 0) ? "rgba(255,255,255,0.2)" : "#ccc", fontSize: 10, fontWeight: 700, padding: "7px 8px", borderRadius: 8, cursor: anyPending ? "default" : "pointer" }}>⏱{to60left + to30left}</button>
+      </div>
+
+      {/* Action row 2 */}
+      <div style={{ padding: "4px 16px 0", display: "flex", justifyContent: "center", gap: 5 }}>
+        <button onClick={handleRebound} disabled={anyPending} style={{ background: "rgba(34,197,94,0.12)", border: "1px solid rgba(34,197,94,0.3)", color: anyPending ? "rgba(34,197,94,0.3)" : "#22c55e", fontSize: 11, fontWeight: 700, padding: "7px 14px", borderRadius: 8, cursor: anyPending ? "default" : "pointer" }}>Reb</button>
+        <button onClick={handleSteal} disabled={anyPending} style={{ background: "rgba(59,130,246,0.12)", border: "1px solid rgba(59,130,246,0.3)", color: anyPending ? "rgba(59,130,246,0.3)" : "#3b82f6", fontSize: 11, fontWeight: 700, padding: "7px 14px", borderRadius: 8, cursor: anyPending ? "default" : "pointer" }}>Stl</button>
+        <button onClick={handleBlock} disabled={anyPending} style={{ background: "rgba(236,72,153,0.12)", border: "1px solid rgba(236,72,153,0.3)", color: anyPending ? "rgba(236,72,153,0.3)" : "#ec4899", fontSize: 11, fontWeight: 700, padding: "7px 14px", borderRadius: 8, cursor: anyPending ? "default" : "pointer" }}>Blk</button>
       </div>
 
       {/* Make / Miss */}
       <div style={{ padding: "8px 16px", display: "flex", gap: 12 }}>
-        <button onClick={() => handleMakeMiss("make")} disabled={!canRecord || !!pending} style={{ flex: 1, padding: "14px 0", borderRadius: 14, border: "none", fontSize: 18, fontWeight: 800, letterSpacing: 2, cursor: canRecord && !pending ? "pointer" : "default", background: canRecord && !pending ? (ftMode ? "#818cf8" : "#22c55e") : (ftMode ? "rgba(129,140,248,0.15)" : "rgba(34,197,94,0.15)"), color: canRecord && !pending ? "#000" : (ftMode ? "rgba(129,140,248,0.4)" : "rgba(34,197,94,0.4)"), transition: "all 0.2s" }}>
-          MAKE
-        </button>
-        <button onClick={() => handleMakeMiss("miss")} disabled={!canRecord || !!pending} style={{ flex: 1, padding: "14px 0", borderRadius: 14, border: "none", fontSize: 18, fontWeight: 800, letterSpacing: 2, cursor: canRecord && !pending ? "pointer" : "default", background: canRecord && !pending ? "#ef4444" : "rgba(239,68,68,0.15)", color: canRecord && !pending ? "#fff" : "rgba(239,68,68,0.4)", transition: "all 0.2s" }}>
-          MISS
-        </button>
+        <button onClick={() => handleMakeMiss("make")} disabled={!canRecord || anyPending} style={{ flex: 1, padding: "14px 0", borderRadius: 14, border: "none", fontSize: 18, fontWeight: 800, letterSpacing: 2, cursor: canRecord && !anyPending ? "pointer" : "default", background: canRecord && !anyPending ? (ftMode ? "#818cf8" : "#22c55e") : (ftMode ? "rgba(129,140,248,0.15)" : "rgba(34,197,94,0.15)"), color: canRecord && !anyPending ? "#000" : (ftMode ? "rgba(129,140,248,0.4)" : "rgba(34,197,94,0.4)"), transition: "all 0.2s" }}>MAKE</button>
+        <button onClick={() => handleMakeMiss("miss")} disabled={!canRecord || anyPending} style={{ flex: 1, padding: "14px 0", borderRadius: 14, border: "none", fontSize: 18, fontWeight: 800, letterSpacing: 2, cursor: canRecord && !anyPending ? "pointer" : "default", background: canRecord && !anyPending ? "#ef4444" : "rgba(239,68,68,0.15)", color: canRecord && !anyPending ? "#fff" : "rgba(239,68,68,0.4)", transition: "all 0.2s" }}>MISS</button>
       </div>
 
-      {!ftMode && !activeZone && !pending && (
-        <div style={{ textAlign: "center", padding: "2px 16px 8px", color: "#444", fontSize: 12 }}>Tap a zone, then Make or Miss. Use Foul / TO for other events.</div>
-      )}
+      {!ftMode && !activeZone && !anyPending && (<div style={{ textAlign: "center", padding: "2px 16px 8px", color: "#444", fontSize: 12 }}>Tap a zone, then Make or Miss. Use Foul / TO for other events.</div>)}
 
       {/* Stats Toggle */}
       <div style={{ padding: "4px 16px 8px", textAlign: "center" }}>
-        <button onClick={() => setShowStats(p => !p)} style={{ background: showStats ? "rgba(250,204,21,0.15)" : "rgba(255,255,255,0.06)", border: "1px solid " + (showStats ? "rgba(250,204,21,0.3)" : "rgba(255,255,255,0.12)"), color: showStats ? "#facc15" : "#888", fontSize: 12, fontWeight: 700, padding: "8px 24px", borderRadius: 8, cursor: "pointer", width: "100%" }}>
-          {showStats ? "▾ Hide Stats" : "▸ Full Stats & Breakdown"}
-        </button>
+        <button onClick={() => setShowStats(p => !p)} style={{ background: showStats ? "rgba(250,204,21,0.15)" : "rgba(255,255,255,0.06)", border: "1px solid " + (showStats ? "rgba(250,204,21,0.3)" : "rgba(255,255,255,0.12)"), color: showStats ? "#facc15" : "#888", fontSize: 12, fontWeight: 700, padding: "8px 24px", borderRadius: 8, cursor: "pointer", width: "100%" }}>{showStats ? "▾ Hide Stats" : "▸ Full Stats & Breakdown"}</button>
       </div>
 
       {/* Expanded Stats */}
@@ -877,14 +855,33 @@ export default function App() {
             </div>
             <PBar label="FG" pct={fgPct} color={fgPct >= 50 ? "#22c55e" : fgPct >= 35 ? "#facc15" : "#ef4444"} />
             <PBar label="FT" pct={ftPct} color={ftPct >= 70 ? "#818cf8" : ftPct >= 50 ? "#facc15" : "#ef4444"} mb />
-            <div style={{ display: "flex", justifyContent: "center", gap: 20, marginTop: 6 }}>
-              <div style={{ textAlign: "center" }}><div style={{ fontSize: 16, fontWeight: 800, color: "#f97316" }}>{teamFouls}</div><div style={{ fontSize: 8, color: "#666" }}>TOTAL FOULS</div></div>
-              <div style={{ textAlign: "center" }}><div style={{ fontSize: 16, fontWeight: 800, color: inBonus ? "#ef4444" : "#f97316" }}>{qtrFouls}</div><div style={{ fontSize: 8, color: inBonus ? "#ef4444" : "#666" }}>{Q_LABELS[quarter]} FOULS {inBonus ? "(BONUS)" : ""}</div></div>
-              <div style={{ textAlign: "center" }}><div style={{ fontSize: 16, fontWeight: 800, color: "#a855f7" }}>{teamTOs}</div><div style={{ fontSize: 8, color: "#666" }}>TURNOVERS</div></div>
+            <div style={{ display: "flex", justifyContent: "center", gap: 12, marginTop: 6, flexWrap: "wrap" }}>
+              <div style={{ textAlign: "center" }}><div style={{ fontSize: 16, fontWeight: 800, color: "#f97316" }}>{teamFouls}</div><div style={{ fontSize: 8, color: "#666" }}>FOULS</div></div>
+              <div style={{ textAlign: "center" }}><div style={{ fontSize: 16, fontWeight: 800, color: inBonus ? "#ef4444" : "#f97316" }}>{qtrFouls}</div><div style={{ fontSize: 8, color: inBonus ? "#ef4444" : "#666" }}>{Q_LABELS[quarter]} {inBonus ? "(BONUS)" : ""}</div></div>
+              <div style={{ textAlign: "center" }}><div style={{ fontSize: 16, fontWeight: 800, color: "#a855f7" }}>{teamTOs}</div><div style={{ fontSize: 8, color: "#666" }}>TO</div></div>
+              <div style={{ textAlign: "center" }}><div style={{ fontSize: 16, fontWeight: 800, color: "#22c55e" }}>{teamAssists}</div><div style={{ fontSize: 8, color: "#666" }}>AST</div></div>
+              <div style={{ textAlign: "center" }}><div style={{ fontSize: 16, fontWeight: 800, color: "#22c55e" }}>{teamRebs}</div><div style={{ fontSize: 8, color: "#666" }}>REB</div></div>
+              <div style={{ textAlign: "center" }}><div style={{ fontSize: 16, fontWeight: 800, color: "#3b82f6" }}>{teamStls}</div><div style={{ fontSize: 8, color: "#666" }}>STL</div></div>
+              <div style={{ textAlign: "center" }}><div style={{ fontSize: 16, fontWeight: 800, color: "#ec4899" }}>{teamBlks}</div><div style={{ fontSize: 8, color: "#666" }}>BLK</div></div>
               <div style={{ textAlign: "center" }}><div style={{ fontSize: 16, fontWeight: 800, color: "#ccc" }}>{to60left + to30left}</div><div style={{ fontSize: 8, color: "#666" }}>TIMEOUTS</div></div>
             </div>
           </div>
 
+          {/* Opponent Foul Summary */}
+          {oppTotalFouls > 0 && (
+            <div style={{ background: "rgba(239,68,68,0.04)", border: "1px solid rgba(239,68,68,0.12)", borderRadius: 12, padding: 14, marginBottom: 12 }}>
+              <div style={{ ...SECHEAD, color: "#ef4444" }}>Opponent Fouls</div>
+              <div style={{ display: "flex", justifyContent: "center", gap: 20, marginBottom: 10 }}>
+                <div style={{ textAlign: "center" }}><div style={{ fontSize: 18, fontWeight: 800, color: "#ef4444" }}>{oppTotalFouls}</div><div style={{ fontSize: 8, color: "#666" }}>TOTAL</div></div>
+                <div style={{ textAlign: "center" }}><div style={{ fontSize: 18, fontWeight: 800, color: oppInBonus ? "#22c55e" : "#ef4444" }}>{oppQtrFouls}</div><div style={{ fontSize: 8, color: oppInBonus ? "#22c55e" : "#666" }}>{Q_LABELS[quarter]} {oppInBonus ? "(BONUS)" : ""}</div></div>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                {oppFoulList.map(([num, count]) => (<div key={num} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "4px 0" }}><span style={{ fontSize: 12, color: "#ccc" }}>#{num}</span><span style={{ fontSize: 12, fontWeight: 700, color: count >= 4 ? "#ef4444" : "#f97316" }}>{count} foul{count !== 1 ? "s" : ""}</span></div>))}
+              </div>
+            </div>
+          )}
+
+          {/* Player Breakdown */}
           {players.length > 0 && (
             <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 12, padding: 14, marginBottom: 12 }}>
               <div style={SECHEAD}>Player Breakdown</div>
@@ -895,45 +892,32 @@ export default function App() {
                   const pFGm = pFG.filter(s => s.result === "make").length;
                   const pFTm = pFT.filter(s => s.result === "make").length;
                   const pFGp = pFG.length > 0 ? Math.round(pFGm / pFG.length * 100) : 0;
-                  const p3 = pFG.filter(s => THREE_PT.has(s.zone));
-                  const p3m = p3.filter(s => s.result === "make").length;
-                  const fouls = playerFouls[p.number] || 0;
-                  const tos = playerTOs[p.number] || 0;
-                  const pts = playerPts[p.number] || 0;
+                  const p3 = pFG.filter(s => THREE_PT.has(s.zone)); const p3m = p3.filter(s => s.result === "make").length;
+                  const fouls = playerFouls[p.number] || 0; const tos = playerTOs[p.number] || 0; const pts = playerPts[p.number] || 0;
+                  const ast = playerAssists[p.number] || 0; const reb = playerRebs[p.number] || 0;
+                  const stl = playerStls[p.number] || 0; const blk = playerBlks[p.number] || 0;
                   const foulColor = fouls >= 4 ? "#ef4444" : fouls >= 3 ? "#f97316" : "#666";
-                  const hasActivity = pts > 0 || fouls > 0 || tos > 0 || pFG.length > 0 || pFT.length > 0;
+                  const hasActivity = pts > 0 || fouls > 0 || tos > 0 || pFG.length > 0 || pFT.length > 0 || ast > 0 || reb > 0 || stl > 0 || blk > 0;
+                  // Build compact stat line
+                  const statParts = [];
+                  statParts.push("FG " + pFGm + "/" + pFG.length + (pFG.length > 0 ? " (" + pFGp + "%)" : ""));
+                  if (p3.length > 0) statParts.push("3PT " + p3m + "/" + p3.length);
+                  if (pFT.length > 0) statParts.push("FT " + pFTm + "/" + pFT.length);
+                  if (ast > 0) statParts.push(ast + " ast");
+                  if (reb > 0) statParts.push(reb + " reb");
+                  if (stl > 0) statParts.push(stl + " stl");
+                  if (blk > 0) statParts.push(blk + " blk");
                   return (
                     <div key={p.number} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0", borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
                       <div style={{ ...JERSEY, width: 34, height: 34, fontSize: 14, flexShrink: 0 }}>{p.number}</div>
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontSize: 12, fontWeight: 700, color: "#ccc" }}>{p.name}</div>
-                        {hasActivity ? (
-                          <div style={{ fontSize: 9, color: "#666", marginTop: 2 }}>
-                            {"FG " + pFGm + "/" + pFG.length + (pFG.length > 0 ? " (" + pFGp + "%)" : "")}
-                            {p3.length > 0 ? " · 3PT " + p3m + "/" + p3.length : ""}
-                            {pFT.length > 0 ? " · FT " + pFTm + "/" + pFT.length : ""}
-                          </div>
-                        ) : (
-                          <div style={{ fontSize: 9, color: "#444", marginTop: 2 }}>No activity</div>
-                        )}
+                        {hasActivity ? (<div style={{ fontSize: 9, color: "#666", marginTop: 2 }}>{statParts.join(" · ")}</div>) : (<div style={{ fontSize: 9, color: "#444", marginTop: 2 }}>No activity</div>)}
                       </div>
                       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                        {fouls > 0 && (
-                          <div style={{ textAlign: "center" }}>
-                            <div style={{ fontSize: 15, fontWeight: 800, color: foulColor }}>{fouls}</div>
-                            <div style={{ fontSize: 7, color: foulColor, letterSpacing: 0.5 }}>{fouls >= 4 ? "⚠ FOUL" : "FOUL"}</div>
-                          </div>
-                        )}
-                        {tos > 0 && (
-                          <div style={{ textAlign: "center" }}>
-                            <div style={{ fontSize: 15, fontWeight: 800, color: "#a855f7" }}>{tos}</div>
-                            <div style={{ fontSize: 7, color: "#a855f7", letterSpacing: 0.5 }}>TO</div>
-                          </div>
-                        )}
-                        <div style={{ textAlign: "right", minWidth: 36 }}>
-                          <div style={{ fontSize: 20, fontWeight: 900, color: "#facc15" }}>{pts}</div>
-                          <div style={{ fontSize: 7, color: "#666", letterSpacing: 0.5 }}>PTS</div>
-                        </div>
+                        {fouls > 0 && (<div style={{ textAlign: "center" }}><div style={{ fontSize: 15, fontWeight: 800, color: foulColor }}>{fouls}</div><div style={{ fontSize: 7, color: foulColor, letterSpacing: 0.5 }}>{fouls >= 4 ? "⚠ FOUL" : "FOUL"}</div></div>)}
+                        {tos > 0 && (<div style={{ textAlign: "center" }}><div style={{ fontSize: 15, fontWeight: 800, color: "#a855f7" }}>{tos}</div><div style={{ fontSize: 7, color: "#a855f7", letterSpacing: 0.5 }}>TO</div></div>)}
+                        <div style={{ textAlign: "right", minWidth: 36 }}><div style={{ fontSize: 20, fontWeight: 900, color: "#facc15" }}>{pts}</div><div style={{ fontSize: 7, color: "#666", letterSpacing: 0.5 }}>PTS</div></div>
                       </div>
                     </div>
                   );
@@ -942,33 +926,20 @@ export default function App() {
             </div>
           )}
 
+          {/* Zone Breakdown */}
           {(fgTotal > 0 || ftTotal > 0) && (
             <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 12, padding: 14 }}>
               <div style={SECHEAD}>Zone Breakdown</div>
               <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                 {ZONES.filter(z => zoneStats[z.id].total > 0).map(z => {
                   const s = zoneStats[z.id]; const p = Math.round(s.makes / s.total * 100);
-                  return (
-                    <div key={z.id} style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <div style={{ width: 80, fontSize: 12, color: "#888", flexShrink: 0 }}>{z.label}</div>
-                      <div style={{ flex: 1, height: 8, borderRadius: 4, background: "rgba(255,255,255,0.06)", overflow: "hidden" }}>
-                        <div style={{ height: "100%", width: p + "%", borderRadius: 4, background: p >= 50 ? "#22c55e" : p >= 35 ? "#facc15" : "#ef4444", transition: "width 0.3s" }} />
-                      </div>
-                      <div style={{ width: 60, textAlign: "right", fontSize: 12, color: "#ccc", fontWeight: 700 }}>
-                        {s.makes}/{s.total} <span style={{ color: "#666", fontWeight: 400 }}>({p}%)</span>
-                      </div>
-                    </div>
-                  );
+                  return (<div key={z.id} style={{ display: "flex", alignItems: "center", gap: 8 }}><div style={{ width: 80, fontSize: 12, color: "#888", flexShrink: 0 }}>{z.label}</div><div style={{ flex: 1, height: 8, borderRadius: 4, background: "rgba(255,255,255,0.06)", overflow: "hidden" }}><div style={{ height: "100%", width: p + "%", borderRadius: 4, background: p >= 50 ? "#22c55e" : p >= 35 ? "#facc15" : "#ef4444", transition: "width 0.3s" }} /></div><div style={{ width: 60, textAlign: "right", fontSize: 12, color: "#ccc", fontWeight: 700 }}>{s.makes}/{s.total} <span style={{ color: "#666", fontWeight: 400 }}>({p}%)</span></div></div>);
                 })}
                 {ftTotal > 0 && (
                   <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4, paddingTop: 4, borderTop: "1px solid rgba(255,255,255,0.06)" }}>
                     <div style={{ width: 80, fontSize: 12, color: "#818cf8", flexShrink: 0, fontWeight: 600 }}>Free Throws</div>
-                    <div style={{ flex: 1, height: 8, borderRadius: 4, background: "rgba(255,255,255,0.06)", overflow: "hidden" }}>
-                      <div style={{ height: "100%", width: ftPct + "%", borderRadius: 4, background: "#818cf8", transition: "width 0.3s" }} />
-                    </div>
-                    <div style={{ width: 60, textAlign: "right", fontSize: 12, color: "#ccc", fontWeight: 700 }}>
-                      {ftMakes}/{ftTotal} <span style={{ color: "#666", fontWeight: 400 }}>({ftPct}%)</span>
-                    </div>
+                    <div style={{ flex: 1, height: 8, borderRadius: 4, background: "rgba(255,255,255,0.06)", overflow: "hidden" }}><div style={{ height: "100%", width: ftPct + "%", borderRadius: 4, background: "#818cf8", transition: "width 0.3s" }} /></div>
+                    <div style={{ width: 60, textAlign: "right", fontSize: 12, color: "#ccc", fontWeight: 700 }}>{ftMakes}/{ftTotal} <span style={{ color: "#666", fontWeight: 400 }}>({ftPct}%)</span></div>
                   </div>
                 )}
               </div>
