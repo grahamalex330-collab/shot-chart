@@ -576,45 +576,48 @@ export default function App() {
         <button onClick={()=>{const g=sessions.find(s=>s.id===curId);if(g)exportGamePdf({...g,shots,events,players,quarter});}} style={{background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",color:"#888",fontSize:12,fontWeight:700,padding:"10px 16px",borderRadius:10,cursor:"pointer"}}>Export PDF</button>
       </div>
 
-      {showStats&&<div style={{padding:"0 16px 16px"}}>
-        {players.length>0&&<div style={{background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.06)",borderRadius:12,padding:14}}>
-          <div style={SECHEAD}>Player breakdown</div>
-          {sortedPlayers.map(p=>{
+      {showStats&&players.length>0&&<div style={{padding:"0 16px 16px"}}>
+        <div style={{background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.06)",borderRadius:12,overflow:"hidden"}}>
+          {/* Grid header */}
+          <div style={{display:"grid",gridTemplateColumns:"90px repeat(9,minmax(0,1fr))",borderBottom:"1px solid rgba(255,255,255,0.08)"}}>
+            <div style={{padding:"10px 10px",fontSize:10,color:"#555",letterSpacing:1}}>PLAYER</div>
+            {[{l:"PTS",c:"#facc15"},{l:"FG",c:"#22c55e"},{l:"FT",c:"#818cf8"},{l:"AST",c:"#22c55e"},{l:"REB",c:"#22c55e"},{l:"STL",c:"#3b82f6"},{l:"BLK",c:"#ec4899"},{l:"FLS",c:"#f97316"},{l:"TO",c:"#a855f7"}].map(h=>
+              <div key={h.l} style={{padding:"10px 2px",fontSize:10,color:h.c,letterSpacing:0.5,textAlign:"center"}}>{h.l}</div>
+            )}
+          </div>
+          {/* Player rows */}
+          {sortedPlayers.map((p,ri)=>{
             const pS=shots.filter(s=>s.playerNum===p.number);
             const pFG=pS.filter(s=>!s.isFT); const pFT=pS.filter(s=>s.isFT);
             const pFGm=pFG.filter(s=>s.result==="make").length; const pFTm=pFT.filter(s=>s.result==="make").length;
-            const pFGp=pFG.length>0?Math.round(pFGm/pFG.length*100):0;
-            const p3=pFG.filter(s=>THREE_PT.has(mapZone(s.zone))); const p3m=p3.filter(s=>s.result==="make").length;
-            const pts=pS.reduce((sum,s)=>sum+getPoints(s),0);
-            const fouls=events.filter(e=>e.type==="foul"&&e.playerNum===p.number).length;
-            const tos=events.filter(e=>e.type==="turnover"&&e.playerNum===p.number).length;
-            const ast=events.filter(e=>e.type==="assist"&&e.playerNum===p.number).length + shots.filter(s=>s.assistNum===p.number).length;
+            const pPts=pS.reduce((sum,s)=>sum+getPoints(s),0);
+            const ast=events.filter(e=>e.type==="assist"&&e.playerNum===p.number).length+shots.filter(s=>s.assistNum===p.number).length;
             const reb=events.filter(e=>e.type==="rebound"&&e.playerNum===p.number).length;
             const stl=events.filter(e=>e.type==="steal"&&e.playerNum===p.number).length;
             const blk=events.filter(e=>e.type==="block"&&e.playerNum===p.number).length;
-            const parts=[];
-            parts.push("FG "+pFGm+"/"+pFG.length+(pFG.length>0?" ("+pFGp+"%)":""));
-            if (p3.length>0) parts.push("3PT "+p3m+"/"+p3.length);
-            if (pFT.length>0) parts.push("FT "+pFTm+"/"+pFT.length);
-            if (ast>0) parts.push(ast+" ast"); if (reb>0) parts.push(reb+" reb");
-            if (stl>0) parts.push(stl+" stl"); if (blk>0) parts.push(blk+" blk");
-            if (fouls>0) parts.push(fouls+" fouls"); if (tos>0) parts.push(tos+" TO");
-            const foulColor=fouls>=4?"#ef4444":fouls>=3?"#f97316":"#666";
+            const fls=events.filter(e=>e.type==="foul"&&e.playerNum===p.number).length;
+            const to=events.filter(e=>e.type==="turnover"&&e.playerNum===p.number).length;
+            const flsColor=fls>=4?"#ef4444":fls>=3?"#f97316":"#f97316";
+            const PM=({val,color,type:t})=><div style={{textAlign:"center"}}><div style={{display:"inline-flex",alignItems:"center",gap:2}}><span onClick={()=>decrementStat(t,p.number)} style={{color:"#444",fontSize:18,cursor:"pointer",padding:"4px 6px",lineHeight:1}}>-</span><span style={{fontSize:15,fontWeight:800,color:val>0?color:"#444",minWidth:16,textAlign:"center"}}>{val}</span><span onClick={()=>incrementStat(t,p.number)} style={{color:"#444",fontSize:18,cursor:"pointer",padding:"4px 6px",lineHeight:1}}>+</span></div></div>;
             return (
-              <div key={p.number} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 0",borderBottom:"1px solid rgba(255,255,255,0.04)"}}>
-                <div style={{...JERSEY,width:34,height:34,fontSize:14,flexShrink:0}}>{p.number}</div>
-                <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontSize:12,fontWeight:700,color:"#ccc"}}>{p.name}</div>
-                  <div style={{fontSize:9,color:"#666",marginTop:2}}>{parts.join(" · ")}</div>
+              <div key={p.number} style={{display:"grid",gridTemplateColumns:"90px repeat(9,minmax(0,1fr))",alignItems:"center",borderBottom:ri<sortedPlayers.length-1?"1px solid rgba(255,255,255,0.04)":"none",background:ri%2===0?"rgba(250,204,21,0.02)":"transparent"}}>
+                <div style={{padding:"8px 10px",display:"flex",alignItems:"center",gap:6}}>
+                  <div style={{width:28,height:28,borderRadius:6,background:"rgba(250,204,21,0.15)",border:"1px solid rgba(250,204,21,0.3)",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:800,color:"#facc15",fontSize:12,flexShrink:0}}>{p.number}</div>
+                  <span style={{fontSize:12,fontWeight:600,color:"#ccc",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.name}</span>
                 </div>
-                <div style={{display:"flex",alignItems:"center",gap:10}}>
-                  {fouls>0&&<div style={{textAlign:"center"}}><div style={{fontSize:15,fontWeight:800,color:foulColor}}>{fouls}</div><div style={{fontSize:7,color:foulColor}}>{fouls>=4?"⚠ FOUL":"FOUL"}</div></div>}
-                  <div style={{textAlign:"right",minWidth:36}}><div style={{fontSize:20,fontWeight:900,color:"#facc15"}}>{pts}</div><div style={{fontSize:7,color:"#666"}}>PTS</div></div>
-                </div>
+                <div style={{textAlign:"center",fontSize:18,fontWeight:800,color:"#facc15"}}>{pPts}</div>
+                <div style={{textAlign:"center",fontSize:11,color:pFG.length>0?"#888":"#444"}}>{pFGm}/{pFG.length}</div>
+                <div style={{textAlign:"center",fontSize:11,color:pFT.length>0?"#888":"#444"}}>{pFTm}/{pFT.length}</div>
+                <PM val={ast} color="#22c55e" type="assist" />
+                <PM val={reb} color="#22c55e" type="rebound" />
+                <PM val={stl} color="#3b82f6" type="steal" />
+                <PM val={blk} color="#ec4899" type="block" />
+                <PM val={fls} color={flsColor} type="foul" />
+                <PM val={to} color="#a855f7" type="turnover" />
               </div>
             );
           })}
-        </div>}
+        </div>
       </div>}
     </div>
   );
