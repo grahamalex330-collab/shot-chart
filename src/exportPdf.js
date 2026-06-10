@@ -19,7 +19,7 @@ export function exportGamePdf(game) {
   doc.text(fmtDate(date),M,y);y+=20;
   // Score
   doc.setFontSize(14);doc.setTextColor(...dark);doc.setFont("helvetica","bold");
-  if(st.oppScore>0) doc.text("US "+st.totalPts+" — THEM "+st.oppScore,M,y);
+  if(st.oppScore>0) doc.text("WOLVES "+st.totalPts+" — BAD GUYS "+st.oppScore,M,y);
   else doc.text("Total Points: "+st.totalPts,M,y);
   y+=18;
   doc.setFontSize(11);doc.setFont("helvetica","normal");
