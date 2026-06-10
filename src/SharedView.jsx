@@ -24,7 +24,7 @@ export default function SharedView({gameId}){
 
     {/* Score */}
     <div style={{textAlign:"center",padding:"16px 0 6px"}}>
-      {st.oppScore>0?<div><span style={{fontSize:48,fontWeight:900,color:"#facc15"}}>{st.totalPts}</span><span style={{fontSize:24,color:"#555",margin:"0 12px"}}>—</span><span style={{fontSize:48,fontWeight:900,color:"#ef4444"}}>{st.oppScore}</span><div style={{fontSize:11,color:"#666",letterSpacing:2,marginTop:4}}>US — THEM</div></div>
+      {st.oppScore>0?<div><span style={{fontSize:48,fontWeight:900,color:"#facc15"}}>{st.totalPts}</span><span style={{fontSize:24,color:"#555",margin:"0 12px"}}>—</span><span style={{fontSize:48,fontWeight:900,color:"#ef4444"}}>{st.oppScore}</span><div style={{fontSize:11,color:"#666",letterSpacing:2,marginTop:4}}>WOLVES — BAD GUYS</div></div>
     :<div><div style={{fontSize:56,fontWeight:900,color:"#facc15",lineHeight:1}}>{st.totalPts}</div><div style={{fontSize:11,color:"#666",letterSpacing:2,marginTop:4}}>TOTAL POINTS</div></div>}
     </div>
 
