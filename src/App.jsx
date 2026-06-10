@@ -1,26 +1,14 @@
-import { useState, useRef, useCallback, useEffect } from "react";
-import { fetchAllGames, createGame, updateGame, deleteGame as apiDeleteGame } from "./api.js";
+import { useState, useRef, useCallback, useEffect, useMemo } from "react";
+import { fetchAllGames, createGame, deleteGame as apiDeleteGame } from "./api.js";
 import { exportGamePdf } from "./exportPdf.js";
+import { ZONES, Q_LABELS, genId, makeEvent, toEventLog, computeGameStats, lastActiveTally, tallyEntries, ftEntries, describeEvent, getPoints } from "./gameEngine.js";
+import { dbPutGame, dbGetAllGames, dbDeleteGame, dbAvailable } from "./db.js";
+import { enqueue, onSyncStatus, startSyncLoop } from "./sync.js";
 
-/* ─── ZONES (6, flipped court — hoop at top) ─── */
-const ZONES = [
-  { id: "paint", label: "Paint", x: 140, y: 5, w: 120, h: 92, cx: 200, cy: 50 },
-  { id: "2pt-left", label: "2PT Left", x: 15, y: 48, w: 115, h: 122, cx: 72, cy: 108 },
-  { id: "2pt-right", label: "2PT Right", x: 270, y: 48, w: 115, h: 122, cx: 328, cy: 108 },
-  { id: "3pt-left", label: "3PT Left", x: 8, y: 190, w: 130, h: 100, cx: 73, cy: 240 },
-  { id: "3pt-right", label: "3PT Right", x: 262, y: 190, w: 130, h: 100, cx: 327, cy: 240 },
-  { id: "3pt-top", label: "3PT Top", x: 148, y: 225, w: 104, h: 80, cx: 200, cy: 265 },
-];
-const THREE_PT = new Set(["3pt-left", "3pt-right", "3pt-top"]);
-const Q_LABELS = ["Q1", "Q2", "Q3", "Q4", "OT", "OT2"];
 const DEFAULT_ROSTER = [
   { number: "3", name: "Bella" }, { number: "4", name: "Maliah" }, { number: "5", name: "Hayden" },
   { number: "12", name: "Nikki" }, { number: "21", name: "Adyson" }, { number: "23", name: "Journey" }, { number: "24", name: "Caroline" },
 ];
-const OLD_ZONE_MAP = { "paint":"paint","ft-line":"paint","top-key":"paint","left-block":"2pt-left","left-elbow":"2pt-left","left-mid":"2pt-left","right-block":"2pt-right","right-elbow":"2pt-right","right-mid":"2pt-right","left-wing3":"3pt-left","left-corner3":"3pt-left","right-wing3":"3pt-right","right-corner3":"3pt-right","top3":"3pt-top" };
-function mapZone(id) { return OLD_ZONE_MAP[id] || id; }
-function getPoints(s) { if (s.result !== "make") return 0; if (s.isFT) return 1; const z = mapZone(s.zone); return THREE_PT.has(z) ? 3 : 2; }
-function genId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
 
 /* ─── STYLES ─── */
 const SHELL = { minHeight:"100vh", background:"#0a0a0a", fontFamily:"'SF Pro Display','Helvetica Neue',sans-serif", color:"#fff", userSelect:"none", WebkitUserSelect:"none", WebkitTouchCallout:"none", maxWidth:900, margin:"0 auto" };
@@ -37,81 +25,53 @@ function StatBox({ label, value, color }) {
   return <div style={{ textAlign:"center" }}><div style={{ fontSize:22, fontWeight:800, color, lineHeight:1 }}>{value}</div><div style={{ fontSize:8, color:"#555", letterSpacing:1.2, marginTop:3, textTransform:"uppercase" }}>{label}</div></div>;
 }
 
-/* ─── TALLY CARD COMPONENT ─── */
+/* Touch-friendly +/- (44px min targets, pressed feedback) */
+function TapBtn({ onTap, children, color = "#555", size = 44, fontSize = 20 }) {
+  const [pressed, setPressed] = useState(false);
+  return (
+    <span
+      onClick={onTap}
+      onPointerDown={() => setPressed(true)}
+      onPointerUp={() => setPressed(false)}
+      onPointerLeave={() => setPressed(false)}
+      style={{ display:"inline-flex", alignItems:"center", justifyContent:"center", minWidth:size, minHeight:size, color, fontSize, cursor:"pointer", borderRadius:8, background:pressed?"rgba(255,255,255,0.12)":"transparent", transform:pressed?"scale(0.92)":"none", transition:"transform 0.05s", touchAction:"manipulation" }}
+    >{children}</span>
+  );
+}
+
 function TallyCard({ title, type, entries, onAdd, onInc, onDec, compact, warnAt }) {
   const c = CC[type] || CC.rebound;
   const total = entries.reduce((sum, e) => sum + e.count, 0);
-  const fs = compact ? { title:12, count:11, name:11, num:13, plus:18, pad:"8px 10px", gap:"2px 0", br:10 } : { title:14, count:13, name:12, num:15, plus:20, pad:"10px 12px", gap:"4px 0", br:12 };
+  const fs = compact ? { title:12, count:11, name:11, num:14 } : { title:14, count:13, name:12, num:15 };
   return (
-    <div style={{ background:c.bg, border:"1.5px solid "+c.bd, borderRadius:fs.br, padding:fs.pad }}>
-      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:entries.length>0?6:0 }}>
+    <div style={{ background:c.bg, border:"1.5px solid "+c.bd, borderRadius:compact?10:12, padding:compact?"8px 10px":"10px 12px" }}>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:entries.length>0?4:0 }}>
         <span style={{ fontSize:fs.title, fontWeight:800, color:c.t }}>{title}</span>
         <span style={{ fontSize:fs.count, color:c.t, fontWeight:700 }}>{total}</span>
       </div>
       {entries.map(e => {
         const warn = warnAt && e.count >= warnAt;
-        const numColor = warn ? "#ef4444" : c.t;
         return (
-          <div key={e.num} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:fs.gap }}>
+          <div key={e.num} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"1px 0" }}>
             <span style={{ fontSize:fs.name, color:"#ccc" }}>{warn?"⚠ ":""}#{e.num} {e.name}</span>
-            <div style={{ display:"flex", alignItems:"center", gap:compact?4:6 }}>
-              <span onClick={()=>onDec(e.num)} style={{ color:"#555", fontSize:compact?14:16, cursor:"pointer", padding:"0 4px" }}>-</span>
-              <span style={{ fontSize:fs.num, fontWeight:800, color:numColor, minWidth:14, textAlign:"center" }}>{e.count}</span>
-              <span onClick={()=>onInc(e.num)} style={{ color:"#555", fontSize:compact?14:16, cursor:"pointer", padding:"0 4px" }}>+</span>
+            <div style={{ display:"flex", alignItems:"center" }}>
+              <TapBtn onTap={()=>onDec(e.num)} size={compact?40:44} fontSize={compact?16:18}>-</TapBtn>
+              <span style={{ fontSize:fs.num, fontWeight:800, color:warn?"#ef4444":c.t, minWidth:18, textAlign:"center" }}>{e.count}</span>
+              <TapBtn onTap={()=>onInc(e.num)} size={compact?40:44} fontSize={compact?16:18}>+</TapBtn>
             </div>
           </div>
         );
       })}
-      <div onClick={onAdd} style={{ textAlign:"center", color:c.t, fontSize:fs.plus, cursor:"pointer", marginTop:entries.length>0?6:2, padding:"2px 0" }}>+</div>
+      <div onClick={onAdd} style={{ textAlign:"center", color:c.t, fontSize:compact?18:20, cursor:"pointer", marginTop:entries.length>0?2:0, minHeight:40, display:"flex", alignItems:"center", justifyContent:"center", touchAction:"manipulation" }}>+</div>
     </div>
   );
-}
-
-/* ─── DESCRIBE ACTION (for Recent panel) ─── */
-function describeAction(item, players) {
-  const pName = (num) => { if (!num) return ""; const p = players.find(x => x.number === num); return p ? "#"+p.number+" "+p.name : "#"+num; };
-  const qLabel = Q_LABELS[item.quarter] || "";
-  if (item.result !== undefined) {
-    const made = item.result === "make" ? "Make" : "Miss";
-    if (item.isFT) return "FT "+made+(item.playerNum?" — "+pName(item.playerNum):"")+" — "+qLabel;
-    const zone = ZONES.find(z => z.id === mapZone(item.zone));
-    return made+" — "+(zone?zone.label:item.zone||"")+(item.playerNum?" — "+pName(item.playerNum):"")+" — "+qLabel;
-  }
-  if (item.type==="foul") return "Foul — "+pName(item.playerNum)+" — "+qLabel;
-  if (item.type==="opp_foul") return "Opp Foul — #"+(item.playerNum||"?")+" — "+qLabel;
-  if (item.type==="turnover") return "Turnover — "+pName(item.playerNum)+" — "+qLabel;
-  if (item.type==="timeout") return "Timeout "+item.duration+"s — "+qLabel;
-  if (item.type==="rebound") return "Rebound — "+pName(item.playerNum)+" — "+qLabel;
-  if (item.type==="steal") return "Steal — "+pName(item.playerNum)+" — "+qLabel;
-  if (item.type==="block") return "Block — "+pName(item.playerNum)+" — "+qLabel;
-  if (item.type==="assist") return "Assist — "+pName(item.playerNum)+" — "+qLabel;
-  return "Action — "+qLabel;
-}
-
-/* ─── TALLY ENTRIES HELPER ─── */
-function tallyEntries(events, type, players) {
-  const counts = {};
-  events.filter(e => e.type === type).forEach(e => { if (e.playerNum) counts[e.playerNum] = (counts[e.playerNum]||0) + 1; });
-  return Object.entries(counts).map(([num, count]) => { const p = players.find(x => x.number === num); return { num, name: p ? p.name : "#"+num, count }; }).sort((a,b) => b.count - a.count);
-}
-function assistEntries(events, shots, players) {
-  const counts = {};
-  events.filter(e => e.type === "assist").forEach(e => { if (e.playerNum) counts[e.playerNum] = (counts[e.playerNum]||0) + 1; });
-  shots.forEach(s => { if (s.assistNum) counts[s.assistNum] = (counts[s.assistNum]||0) + 1; });
-  return Object.entries(counts).map(([num, count]) => { const p = players.find(x => x.number === num); return { num, name: p ? p.name : "#"+num, count }; }).sort((a,b) => b.count - a.count);
-}
-function ftEntries(shots, players) {
-  const data = {};
-  shots.filter(s => s.isFT && s.playerNum).forEach(s => { if (!data[s.playerNum]) data[s.playerNum] = { made:0, att:0 }; data[s.playerNum].att++; if (s.result==="make") data[s.playerNum].made++; });
-  return Object.entries(data).map(([num, d]) => { const p = players.find(x => x.number === num); return { num, name: p ? p.name : "#"+num, made:d.made, att:d.att }; }).sort((a,b) => b.att - a.att);
 }
 
 /* ─── APP ─── */
 export default function App() {
   const [sessions, setSessions] = useState([]);
   const [curId, setCurId] = useState(null);
-  const [shots, setShots] = useState([]);
-  const [events, setEvents] = useState([]);
+  const [eventLog, setEventLog] = useState([]);
   const [players, setPlayers] = useState([]);
   const [quarter, setQuarter] = useState(0);
   const [activeZone, setActiveZone] = useState(null);
@@ -132,182 +92,208 @@ export default function App() {
   const [foulWarning, setFoulWarning] = useState(null);
   const [rName, setRName] = useState("");
   const [rNum, setRNum] = useState("");
-  const [dbStatus, setDbStatus] = useState("loading");
-  const [saveOk, setSaveOk] = useState(null);
+  const [syncState, setSyncState] = useState("synced");
   const [shareMsg, setShareMsg] = useState(null);
   const idRef = useRef(null);
   idRef.current = curId;
+  const logRef = useRef(eventLog);
+  logRef.current = eventLog;
 
+  /* ─── BOOT: IndexedDB first (instant), Supabase merge in background ─── */
   useEffect(() => {
     let cancelled = false;
+    onSyncStatus(s => { if (!cancelled) setSyncState(s); });
     (async () => {
-      const games = await fetchAllGames();
+      let localGames = [];
+      if (dbAvailable()) {
+        try { localGames = await dbGetAllGames(); } catch (e) {}
+      }
+      if (!cancelled && localGames.length > 0) {
+        setSessions(sortGames(localGames));
+        setView("history");
+      }
+      // Background: fetch server, merge (dirty-local wins)
+      const serverGames = await fetchAllGames();
       if (cancelled) return;
-      if (games === null) { setDbStatus("error"); try { const l = localStorage.getItem("sc_data"); if (l) setSessions(JSON.parse(l)); } catch(e){} }
-      else { setDbStatus("ok"); setSessions(games); }
-      setView("history");
+      if (serverGames !== null) {
+        let dirtyIds = [];
+        try { const { dbGetDirtyIds } = await import("./db.js"); dirtyIds = await dbGetDirtyIds(); } catch (e) {}
+        const dirty = new Set(dirtyIds);
+        const localById = {}; localGames.forEach(g => { localById[g.id] = g; });
+        const merged = serverGames.map(sg => dirty.has(sg.id) && localById[sg.id] ? localById[sg.id] : normalizeGame(sg));
+        // local-only games (created offline) that server doesn't have yet
+        const serverIds = new Set(serverGames.map(g => g.id));
+        localGames.forEach(lg => { if (!serverIds.has(lg.id)) merged.push(lg); });
+        if (!cancelled) { setSessions(sortGames(merged)); for (const g of merged) { try { await dbPutGame(g); } catch (e) {} } }
+        startSyncLoop();
+      } else if (localGames.length === 0 && !cancelled) {
+        setSyncState("error");
+      }
+      if (!cancelled) setView(v => v === "loading" ? "history" : v);
     })();
     return () => { cancelled = true; };
   }, []);
 
-  const saveTimer = useRef(null);
-  const saveToDb = useCallback((gameData) => {
-    if (dbStatus !== "ok") { try { localStorage.setItem("sc_data", JSON.stringify(sessions)); } catch(e){} return; }
-    clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(async () => {
-      const result = await updateGame(gameData);
-      if (result) { setSaveOk(true); setTimeout(() => setSaveOk(null), 1200); } else { setSaveOk(false); }
-    }, 800);
-  }, [dbStatus, sessions]);
+  function normalizeGame(g) {
+    return { id:g.id, teamName:g.team_name||g.teamName||"", team_name:g.team_name||g.teamName||"", players:g.players||[], shots:g.shots||[], events:g.events||[], quarter:g.quarter||0, created_at:g.created_at||g.createdAt||new Date().toISOString() };
+  }
+  function sortGames(arr) { return [...arr].sort((a,b) => new Date(b.created_at||0) - new Date(a.created_at||0)); }
 
-  const syncAll = (newShots, newEvents, newQuarter) => {
+  /* ─── PERSIST: every change → state + IndexedDB + sync queue, instantly ─── */
+  const persist = useCallback((newLog, newQuarter) => {
     const sid = idRef.current; if (!sid) return;
     setSessions(prev => {
-      const updated = prev.map(s => { if (s.id !== sid) return s; const u = { ...s }; if (newShots !== undefined) u.shots = newShots; if (newEvents !== undefined) u.events = newEvents; if (newQuarter !== undefined) u.quarter = newQuarter; return u; });
-      const game = updated.find(s => s.id === sid); if (game) saveToDb(game); return updated;
+      const updated = prev.map(s => {
+        if (s.id !== sid) return s;
+        const u = { ...s, events: newLog !== undefined ? newLog : s.events, shots: [], quarter: newQuarter !== undefined ? newQuarter : s.quarter };
+        try { dbPutGame(u); } catch (e) {}
+        try { enqueue(u.id); } catch (e) {}
+        return u;
+      });
+      return updated;
     });
-  };
+  }, []);
+
+  /* Append one event: the single write path for every game action */
+  const append = useCallback((type, payload) => {
+    const e = makeEvent(logRef.current, type, quarter, payload);
+    const newLog = [...logRef.current, e];
+    setEventLog(newLog);
+    persist(newLog, undefined);
+    return e;
+  }, [quarter, persist]);
 
   const doFlash = (r) => { setFlash(r); setTimeout(() => setFlash(null), 350); };
   const addPlayer = () => { if (!rNum.trim()) return; const n = rNum.trim(); if (players.find(p => p.number === n)) return; setPlayers(prev => [...prev, { number: n, name: rName.trim() || ("#"+n) }]); setRName(""); setRNum(""); };
 
   const startSession = async () => {
-    const gd = { team_name: teamName||"Game", players:[...players], shots:[], events:[], quarter:0, created_at: new Date().toISOString() };
-    let saved; if (dbStatus === "ok") saved = await createGame(gd);
-    const s = saved || { id: genId(), ...gd, teamName: gd.team_name };
-    const n = { id:s.id, teamName:s.team_name||s.teamName||gd.team_name, players:s.players||gd.players, shots:s.shots||[], events:s.events||[], quarter:s.quarter||0, createdAt:s.created_at||s.createdAt||gd.created_at };
-    setSessions(prev => [n, ...prev]); setCurId(n.id); setShots([]); setEvents([]); setQuarter(0); setActiveZone(null); setFtMode(false); setPending(null); setPendingAssist(null); setPendingTally(null); setView("tracker");
+    const id = genId();
+    const game = { id, teamName: teamName||"Game", team_name: teamName||"Game", players:[...players], shots:[], events:[], quarter:0, created_at: new Date().toISOString() };
+    // Server create in background; offline-safe (game exists locally either way)
+    (async () => {
+      const saved = await createGame({ team_name: game.team_name, players: game.players, shots: [], events: [], quarter: 0, created_at: game.created_at });
+      if (saved && saved.id && saved.id !== id) {
+        // Server assigned its own id: rekey local copy
+        setSessions(prev => prev.map(s => s.id === id ? { ...s, id: saved.id } : s));
+        if (idRef.current === id) setCurId(saved.id);
+        try { await dbDeleteGame(id); } catch (e) {}
+        const rekeyed = { ...game, id: saved.id };
+        try { await dbPutGame(rekeyed); } catch (e) {}
+      } else {
+        try { enqueue(id); } catch (e) {}
+      }
+    })();
+    try { await dbPutGame(game); } catch (e) {}
+    setSessions(prev => [game, ...prev]);
+    setCurId(id); setEventLog([]); setQuarter(0); setActiveZone(null); setFtMode(false); setPending(null); setPendingAssist(null); setPendingTally(null); setView("tracker");
   };
 
   const openSession = (s) => {
-    setCurId(s.id); setShots([...(s.shots||[])]); setEvents([...(s.events||[])]); setPlayers([...(s.players||[])]);
-    setTeamName(s.teamName||s.team_name||""); setQuarter(s.quarter||0);
+    setCurId(s.id);
+    setEventLog(toEventLog(s)); // legacy games convert losslessly; V3 passes through
+    setPlayers([...(s.players||[])]);
+    setTeamName(s.teamName||s.team_name||"");
+    setQuarter(s.quarter||0);
     setActiveZone(null); setFtMode(false); setPending(null); setPendingAssist(null); setPendingTally(null); setShowRecent(false); setView("tracker");
   };
 
-  const deleteSession = async (id, e) => { e.stopPropagation(); setSessions(prev => prev.filter(s => s.id !== id)); if (curId === id) { setCurId(null); setShots([]); setEvents([]); setPlayers([]); } if (dbStatus === "ok") await apiDeleteGame(id); };
+  const deleteSession = async (id, e) => { e.stopPropagation(); setSessions(prev => prev.filter(s => s.id !== id)); if (curId === id) { setCurId(null); setEventLog([]); setPlayers([]); } try { await dbDeleteGame(id); } catch (er) {} if (navigator.onLine !== false) await apiDeleteGame(id); };
 
   const shareGame = (id) => {
     const url = window.location.origin + "/game/" + id;
     if (navigator.clipboard) { navigator.clipboard.writeText(url); setShareMsg(id); setTimeout(() => setShareMsg(null), 2000); } else { prompt("Share this link:", url); }
   };
 
-  /* ─── COMPUTED STATS ─── */
-  const fieldGoals = shots.filter(s => !s.isFT);
-  const freeThrows = shots.filter(s => s.isFT);
-  const zoneStats = {};
-  ZONES.forEach(z => { const zs = fieldGoals.filter(s => mapZone(s.zone) === z.id); zoneStats[z.id] = { makes: zs.filter(s => s.result==="make").length, total: zs.length }; });
-  const fgMakes = fieldGoals.filter(s => s.result==="make").length;
-  const fgTotal = fieldGoals.length;
-  const fgPct = fgTotal > 0 ? Math.round(fgMakes/fgTotal*100) : 0;
-  const ftMakes = freeThrows.filter(s => s.result==="make").length;
-  const ftTotal = freeThrows.length;
-  const totalPts = shots.reduce((sum, s) => sum + getPoints(s), 0);
-  const teamFouls = events.filter(e => e.type==="foul").length;
-  const qtrFouls = events.filter(e => e.type==="foul" && e.quarter===quarter).length;
-  const inBonus = qtrFouls >= 5;
-  const oppFoulEvents = events.filter(e => e.type==="opp_foul");
-  const oppQtrFouls = oppFoulEvents.filter(e => e.quarter===quarter).length;
-  const oppInBonus = oppQtrFouls >= 5;
-  const to60used = events.filter(e => e.type==="timeout" && e.duration===60).length;
-  const to30used = events.filter(e => e.type==="timeout" && e.duration===30).length;
-  const to60left = 3 - to60used; const to30left = 2 - to30used;
-  const sortedPlayers = [...players].sort((a,b) => parseInt(a.number) - parseInt(b.number));
-  const recentActions = [...shots, ...events].sort((a,b) => b.id - a.id).slice(0, 15);
+  /* ─── DERIVED STATS: one engine call, memoized ─── */
+  const stats = useMemo(() => computeGameStats(eventLog, players), [eventLog, players]);
+  const sortedPlayers = useMemo(() => [...players].sort((a,b) => parseInt(a.number) - parseInt(b.number)), [players]);
+  const recentActions = useMemo(() => [...stats.activeEvents].sort((a,b) => b.seq - a.seq).slice(0, 15), [stats]);
 
-  // Tally entries for cards
-  const rebEntries = tallyEntries(events, "rebound", players);
-  const astEntries = assistEntries(events, shots, players);
-  const foulEntries = tallyEntries(events, "foul", players);
-  const toEntries = tallyEntries(events, "turnover", players);
-  const stlEntries = tallyEntries(events, "steal", players);
-  const blkEntries = tallyEntries(events, "block", players);
-  const oppFoulEntries = tallyEntries(events, "opp_foul", players);
-  const ftData = ftEntries(shots, players);
-
+  const qtrFoulsNow = stats.qtrFouls[quarter] || 0;
+  const inBonus = qtrFoulsNow >= 5;
+  const oppQtrFoulsNow = stats.oppQtrFouls[quarter] || 0;
+  const oppInBonus = oppQtrFoulsNow >= 5;
   const anyPending = !!pending || !!pendingAssist || !!pendingTally || showTOPicker || showOppFoulInput;
 
-  /* ─── ACTION HANDLERS ─── */
+  const rebEntries = tallyEntries(stats, "rebound", players);
+  const astEntries = tallyEntries(stats, "assist", players);
+  const foulEntries = tallyEntries(stats, "foul", players);
+  const toEntries = tallyEntries(stats, "turnover", players);
+  const stlEntries = tallyEntries(stats, "steal", players);
+  const blkEntries = tallyEntries(stats, "block", players);
+  const oppFoulEntries = Object.entries(stats.oppFoulsByPlayer).map(([num,count]) => ({ num, count })).sort((a,b) => b.count - a.count);
+  const ftData = ftEntries(stats, players);
+
+  /* ─── ACTION HANDLERS: everything appends events ─── */
   const handleZoneTap = useCallback((id) => { if (!ftMode && !anyPending) setActiveZone(id); }, [ftMode, anyPending]);
 
   const handleMakeMiss = (result) => {
     if (anyPending) return;
     if (ftMode) {
-      if (players.length === 0) { const ns = [...shots, { result, id:Date.now(), isFT:true, quarter }]; setShots(ns); syncAll(ns,undefined,undefined); doFlash(result); }
-      else { setPending({ type:"shot", result, isFT:true }); }
+      if (players.length === 0) { append("free_throw_attempt", { result, points: result==="make"?1:0 }); doFlash(result); }
+      else setPending({ kind:"ft", result });
       return;
     }
     if (!activeZone) return;
-    if (players.length === 0) { const ns = [...shots, { zone:activeZone, result, id:Date.now(), isFT:false, quarter }]; setShots(ns); syncAll(ns,undefined,undefined); doFlash(result); setActiveZone(null); }
-    else { setPending({ type:"shot", result, zone:activeZone, isFT:false }); }
-  };
-
-  const handleTimeout = (duration) => {
-    const left = duration===60 ? to60left : to30left; if (left <= 0) return;
-    const ne = [...events, { type:"timeout", duration, id:Date.now(), quarter }]; setEvents(ne); syncAll(undefined,ne,undefined); setShowTOPicker(false);
+    if (players.length === 0) { append("shot_attempt", { zone:activeZone, result, points:getPoints(activeZone,result,false) }); doFlash(result); setActiveZone(null); }
+    else setPending({ kind:"fg", result, zone:activeZone });
   };
 
   const pickPlayer = (num) => {
     if (!pending) return;
-    if (pending.type === "shot") {
-      const shotId = Date.now();
-      const newShot = { result:pending.result, id:shotId, isFT:pending.isFT, zone:pending.zone, playerNum:num, quarter };
-      const ns = [...shots, newShot]; setShots(ns); syncAll(ns,undefined,undefined); doFlash(pending.result); setActiveZone(null);
-      if (pending.result === "make" && !pending.isFT && players.length > 1) { setPending(null); setPendingAssist({ shotId, scorerNum:num }); return; }
+    if (pending.kind === "ft") {
+      append("free_throw_attempt", { playerNum:num, result:pending.result, points:pending.result==="make"?1:0 });
+      doFlash(pending.result); setPending(null); return;
     }
+    append("shot_attempt", { playerNum:num, zone:pending.zone, result:pending.result, points:getPoints(pending.zone,pending.result,false) });
+    doFlash(pending.result); setActiveZone(null);
+    if (pending.result === "make" && players.length > 1) { setPending(null); setPendingAssist({ scorerNum:num }); return; }
     setPending(null);
   };
 
-  const pickAssist = (num) => {
-    if (!pendingAssist) return;
-    const ne = [...events, { type:"assist", playerNum:num, id:Date.now(), quarter }]; setEvents(ne); syncAll(undefined,ne,undefined);
-    setPendingAssist(null);
-  };
-  const skipAssist = () => { setPendingAssist(null); };
+  const pickAssist = (num) => { append("stat_tally", { stat:"assist", playerNum:num }); setPendingAssist(null); };
 
-  /* ─── TALLY CARD HANDLERS ─── */
-  const incrementStat = (type, playerNum) => {
-    const ne = [...events, { type, playerNum, id:Date.now(), quarter }]; setEvents(ne); syncAll(undefined,ne,undefined);
-    if (type === "foul") {
-      const newCount = ne.filter(e => e.type==="foul" && e.playerNum===playerNum).length;
+  const incrementStat = (stat, playerNum) => {
+    append("stat_tally", { stat, playerNum });
+    if (stat === "foul") {
+      const newCount = (stats.players[playerNum]?.fouls || 0) + 1;
       if (newCount >= 4) { const p = players.find(x => x.number===playerNum); setFoulWarning((p?p.name:"#"+playerNum)+" has "+newCount+" fouls!"); setTimeout(() => setFoulWarning(null), 3500); }
     }
   };
 
-  const decrementStat = (type, playerNum) => {
-    const idx = [...events].reverse().findIndex(e => e.type===type && e.playerNum===playerNum);
-    if (idx === -1) return;
-    const realIdx = events.length - 1 - idx;
-    const ne = events.filter((_,i) => i !== realIdx); setEvents(ne); syncAll(undefined,ne,undefined);
+  const decrementStat = (stat, playerNum) => {
+    const target = lastActiveTally(logRef.current, stat, playerNum);
+    if (!target) return;
+    append("reversal", { targetId: target.id });
   };
 
-  const tallyPickPlayer = (num) => {
-    if (!pendingTally) return;
-    incrementStat(pendingTally.type, num);
-    setPendingTally(null);
+  const tallyPickPlayer = (num) => { if (!pendingTally) return; incrementStat(pendingTally.type, num); setPendingTally(null); };
+  const handleOppFoulAdd = (num) => { if (!num) return; incrementStat("opp_foul", String(num)); setOppFoulNum(""); };
+  const handleTimeout = (duration) => {
+    const left = duration===60 ? stats.to60left : stats.to30left; if (left <= 0) return;
+    append("timeout", { duration }); setShowTOPicker(false);
   };
 
-  const handleOppFoulAdd = (num) => {
-    if (!num) return;
-    incrementStat("opp_foul", String(num));
-    setOppFoulNum("");
-  };
+  const advanceQuarter = () => { const nq = (quarter+1) % Q_LABELS.length; setQuarter(nq); const e = makeEvent(logRef.current, "quarter_set", nq, { toQuarter: nq }); const nl = [...logRef.current, e]; setEventLog(nl); persist(nl, nq); };
+  const backQuarter = () => { const nq = (quarter-1+Q_LABELS.length) % Q_LABELS.length; setQuarter(nq); const e = makeEvent(logRef.current, "quarter_set", nq, { toQuarter: nq }); const nl = [...logRef.current, e]; setEventLog(nl); persist(nl, nq); };
 
-  const advanceQuarter = () => { const nq = (quarter+1) % Q_LABELS.length; setQuarter(nq); syncAll(undefined,undefined,nq); };
-  const backQuarter = () => { const nq = (quarter-1+Q_LABELS.length) % Q_LABELS.length; setQuarter(nq); syncAll(undefined,undefined,nq); };
-
-  const deleteAction = (item) => {
-    if (item.result !== undefined) { const ns = shots.filter(s => s.id !== item.id); setShots(ns); syncAll(ns,undefined,undefined); }
-    else { const ne = events.filter(e => e.id !== item.id); setEvents(ne); syncAll(undefined,ne,undefined); }
-  };
+  const deleteAction = (item) => { append("reversal", { targetId: item.id }); };
 
   /* ─── VISUAL HELPERS ─── */
+  const zoneStats = stats.zoneStats;
   const getZoneColor = (id) => { const s = zoneStats[id]; if (!s||!s.total) return "rgba(255,255,255,0.04)"; const p = s.makes/s.total; return p>=0.5?"rgba(34,197,94,0.25)":p>=0.35?"rgba(250,204,21,0.15)":"rgba(239,68,68,0.2)"; };
   const getZoneBorder = (id) => { if (activeZone===id) return "rgba(255,255,255,0.9)"; const s = zoneStats[id]; if (!s||!s.total) return "rgba(255,255,255,0.12)"; const p = s.makes/s.total; return p>=0.5?"rgba(34,197,94,0.5)":p>=0.35?"rgba(250,204,21,0.4)":"rgba(239,68,68,0.45)"; };
   const getZoneText = (id) => { const s = zoneStats[id]; if (!s||!s.total) return "rgba(255,255,255,0.12)"; const p = s.makes/s.total; return p>=0.5?"#22c55e":p>=0.35?"#facc15":"#ef4444"; };
   const flashBorder = flash==="make"?"2px solid #22c55e":flash==="miss"?"2px solid #ef4444":"2px solid transparent";
   const fmtDate = (iso) => { try { return new Date(iso).toLocaleDateString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}); } catch(e) { return ""; } };
-  const StatusBadge = () => { if (dbStatus==="error") return <span style={{color:"#ef4444",fontSize:9,marginLeft:6}}>⚠ offline</span>; if (saveOk===true) return <span style={{color:"#22c55e",fontSize:10,marginLeft:8}}>✓ Saved</span>; if (saveOk===false) return <span style={{color:"#ef4444",fontSize:10,marginLeft:8}}>✕ Save failed</span>; return null; };
+  const StatusBadge = () => {
+    if (syncState==="synced") return <span style={{color:"#22c55e",fontSize:10,marginLeft:8}}>✓ Synced</span>;
+    if (syncState==="syncing") return <span style={{color:"#facc15",fontSize:10,marginLeft:8}}>↻ Syncing…</span>;
+    if (syncState==="local") return <span style={{color:"#facc15",fontSize:10,marginLeft:8}}>● Saved on iPad</span>;
+    if (syncState==="offline") return <span style={{color:"#f97316",fontSize:10,marginLeft:8}}>● Offline — saved on iPad</span>;
+    if (syncState==="error") return <span style={{color:"#f97316",fontSize:10,marginLeft:8}}>● Saved on iPad — will retry</span>;
+    return null;
+  };
 
   if (view === "loading") return <div style={{...SHELL,display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{color:"#555",fontSize:14}}>Loading...</div></div>;
 
@@ -330,21 +316,22 @@ export default function App() {
   // ═══ HISTORY ═══
   if (view === "history") return (
     <div style={SHELL}>
-      <div style={{padding:"20px 16px 12px",display:"flex",justifyContent:"space-between",alignItems:"center"}}><div><div style={{fontSize:20,fontWeight:800}}>Shot Chart</div><div style={SUBHEAD}>Saved Sessions</div></div><button onClick={()=>{setPlayers([...DEFAULT_ROSTER]);setTeamName("");setRName("");setRNum("");setView("roster");}} style={ACCENT}>+ New Game</button></div>
-      {dbStatus==="error"&&<div style={{margin:"0 16px 8px",padding:"8px 12px",background:"rgba(239,68,68,0.1)",border:"1px solid rgba(239,68,68,0.25)",borderRadius:8,fontSize:11,color:"#ef4444"}}>⚠ Database unavailable — using local storage only</div>}
-      {dbStatus==="ok"&&<div style={{margin:"0 16px 8px",padding:"8px 12px",background:"rgba(34,197,94,0.08)",border:"1px solid rgba(34,197,94,0.2)",borderRadius:8,fontSize:11,color:"#22c55e"}}>✓ Connected — games auto-save & are shareable</div>}
+      <div style={{padding:"20px 16px 12px",display:"flex",justifyContent:"space-between",alignItems:"center"}}><div><div style={{fontSize:20,fontWeight:800}}>Shot Chart<StatusBadge /></div><div style={SUBHEAD}>Saved Sessions</div></div><button onClick={()=>{setPlayers([...DEFAULT_ROSTER]);setTeamName("");setRName("");setRNum("");setView("roster");}} style={ACCENT}>+ New Game</button></div>
+      {syncState==="offline"&&<div style={{margin:"0 16px 8px",padding:"8px 12px",background:"rgba(249,115,22,0.1)",border:"1px solid rgba(249,115,22,0.25)",borderRadius:8,fontSize:11,color:"#f97316"}}>● Offline — everything saves to this iPad and syncs when you're back online</div>}
       {sessions.length===0?<div style={{textAlign:"center",padding:"60px 20px",color:"#444"}}><div style={{fontSize:40,marginBottom:12}}>🏀</div><div style={{fontSize:15,fontWeight:600}}>No sessions yet</div></div>:(
         <div style={{padding:"4px 16px 20px",display:"flex",flexDirection:"column",gap:8}}>
-          {/* Season Stats */}
           {(()=>{
-            const allShots=sessions.flatMap(s=>s.shots||[]); const allEvents=sessions.flatMap(s=>s.events||[]); const numGames=sessions.length;
-            if (allShots.length===0&&allEvents.length===0) return null;
-            const yFG=allShots.filter(s=>!s.isFT); const yFT=allShots.filter(s=>s.isFT);
-            const yFGm=yFG.filter(s=>s.result==="make").length; const yFTm=yFT.filter(s=>s.result==="make").length;
-            const yPts=allShots.reduce((sum,s)=>sum+getPoints(s),0);
-            const yFouls=allEvents.filter(e=>e.type==="foul").length; const yTOs=allEvents.filter(e=>e.type==="turnover").length;
-            const yAst=allEvents.filter(e=>e.type==="assist").length + allShots.filter(s=>s.assistNum).length;
-            const yReb=allEvents.filter(e=>e.type==="rebound").length; const yStl=allEvents.filter(e=>e.type==="steal").length; const yBlk=allEvents.filter(e=>e.type==="block").length;
+            // Season stats: engine per game, summed
+            let yPts=0,yFGm=0,yFGa=0,yFTm=0,yFTa=0,yAst=0,yReb=0,yStl=0,yBlk=0,yFouls=0,yTOs=0;
+            let any=false;
+            for (const s of sessions) {
+              const st = computeGameStats(toEventLog(s), s.players||[]);
+              if (st.activeEvents.length>0) any=true;
+              yPts+=st.totalPts; yFGm+=st.fgMakes; yFGa+=st.fgTotal; yFTm+=st.ftMakes; yFTa+=st.ftTotal;
+              yAst+=st.teamAst; yReb+=st.teamReb; yStl+=st.teamStl; yBlk+=st.teamBlk; yFouls+=st.teamFouls; yTOs+=st.teamTOs;
+            }
+            if (!any) return null;
+            const numGames = sessions.length;
             return (
               <><button onClick={()=>setShowYearStats(p=>!p)} style={{background:showYearStats?"rgba(250,204,21,0.12)":"rgba(255,255,255,0.04)",border:"1px solid "+(showYearStats?"rgba(250,204,21,0.25)":"rgba(255,255,255,0.08)"),color:showYearStats?"#facc15":"#888",fontSize:12,fontWeight:700,padding:"10px 16px",borderRadius:10,cursor:"pointer",textAlign:"center"}}>{showYearStats?"▾ Hide Season Stats":"▸ Season Stats — "+numGames+" Game"+(numGames!==1?"s":"")+" · "+yPts+" Total Pts"}</button>
               {showYearStats&&<div style={{background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.06)",borderRadius:12,padding:14}}>
@@ -352,8 +339,8 @@ export default function App() {
                 <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:6,marginBottom:8}}>
                   <div style={{textAlign:"center"}}><div style={{fontSize:20,fontWeight:900,color:"#facc15"}}>{yPts}</div><div style={{fontSize:8,color:"#666"}}>PTS</div></div>
                   <div style={{textAlign:"center"}}><div style={{fontSize:16,fontWeight:800,color:"#facc15"}}>{numGames>0?(yPts/numGames).toFixed(1):"—"}</div><div style={{fontSize:8,color:"#666"}}>PPG</div></div>
-                  <div style={{textAlign:"center"}}><div style={{fontSize:16,fontWeight:800,color:"#22c55e"}}>{yFG.length?Math.round(yFGm/yFG.length*100)+"%":"—"}</div><div style={{fontSize:8,color:"#666"}}>FG {yFGm}/{yFG.length}</div></div>
-                  <div style={{textAlign:"center"}}><div style={{fontSize:16,fontWeight:800,color:"#818cf8"}}>{yFT.length?Math.round(yFTm/yFT.length*100)+"%":"—"}</div><div style={{fontSize:8,color:"#666"}}>FT {yFTm}/{yFT.length}</div></div>
+                  <div style={{textAlign:"center"}}><div style={{fontSize:16,fontWeight:800,color:"#22c55e"}}>{yFGa?Math.round(yFGm/yFGa*100)+"%":"—"}</div><div style={{fontSize:8,color:"#666"}}>FG {yFGm}/{yFGa}</div></div>
+                  <div style={{textAlign:"center"}}><div style={{fontSize:16,fontWeight:800,color:"#818cf8"}}>{yFTa?Math.round(yFTm/yFTa*100)+"%":"—"}</div><div style={{fontSize:8,color:"#666"}}>FT {yFTm}/{yFTa}</div></div>
                 </div>
                 <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:6}}>
                   <div style={{textAlign:"center"}}><div style={{fontSize:16,fontWeight:800,color:"#22c55e"}}>{yAst}</div><div style={{fontSize:8,color:"#666"}}>AST</div></div>
@@ -364,24 +351,21 @@ export default function App() {
               </div>}</>
             );
           })()}
-          {/* Game list */}
           {sessions.map(s=>{
-            const all=s.shots||[]; const ev=s.events||[];
-            const sFG=all.filter(x=>!x.isFT); const sFGm=sFG.filter(x=>x.result==="make").length; const sFGt=sFG.length;
-            const sFGp=sFGt?Math.round(sFGm/sFGt*100):0; const sPts=all.reduce((sum,x)=>sum+getPoints(x),0);
-            const sFouls=ev.filter(x=>x.type==="foul").length; const sTOs=ev.filter(x=>x.type==="turnover").length;
+            const st = computeGameStats(toEventLog(s), s.players||[]);
+            const sFGp = st.fgTotal?Math.round(st.fgMakes/st.fgTotal*100):0;
             return (
               <div key={s.id} onClick={()=>openSession(s)} style={{background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:12,padding:"14px 16px",cursor:"pointer"}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                   <div><div style={{fontSize:15,fontWeight:700}}>{s.teamName||s.team_name||"Unnamed"}</div><div style={{fontSize:11,color:"#666",marginTop:2}}>{fmtDate(s.created_at||s.createdAt)}</div></div>
                   <div style={{display:"flex",alignItems:"center",gap:14}}>
-                    <div style={{textAlign:"center"}}><div style={{fontSize:20,fontWeight:800,color:"#facc15"}}>{sPts}</div><div style={{fontSize:8,color:"#666"}}>PTS</div></div>
-                    <div style={{textAlign:"right"}}><div style={{fontSize:14,fontWeight:800,color:sFGp>=50?"#22c55e":sFGp>=35?"#facc15":sFGt?"#ef4444":"#555"}}>{sFGt?sFGp+"%":"—"}</div><div style={{fontSize:9,color:"#666"}}>FG {sFGm}/{sFGt}</div></div>
+                    <div style={{textAlign:"center"}}><div style={{fontSize:20,fontWeight:800,color:"#facc15"}}>{st.totalPts}</div><div style={{fontSize:8,color:"#666"}}>PTS</div></div>
+                    <div style={{textAlign:"right"}}><div style={{fontSize:14,fontWeight:800,color:sFGp>=50?"#22c55e":sFGp>=35?"#facc15":st.fgTotal?"#ef4444":"#555"}}>{st.fgTotal?sFGp+"%":"—"}</div><div style={{fontSize:9,color:"#666"}}>FG {st.fgMakes}/{st.fgTotal}</div></div>
                     <button onClick={e=>{e.stopPropagation();shareGame(s.id);}} style={{background:"none",border:"none",color:shareMsg===s.id?"#22c55e":"#facc15",fontSize:13,cursor:"pointer",padding:"4px"}}>{shareMsg===s.id?"✓":"🔗"}</button>
                     <button onClick={e=>deleteSession(s.id,e)} style={{background:"none",border:"none",color:"#555",fontSize:18,cursor:"pointer",padding:"4px 2px"}}>×</button>
                   </div>
                 </div>
-                {(sFouls>0||sTOs>0)&&<div style={{display:"flex",gap:12,marginTop:6,fontSize:10,color:"#666"}}>{sFouls>0&&<span style={{color:"#f97316"}}>{sFouls} fouls</span>}{sTOs>0&&<span style={{color:"#a855f7"}}>{sTOs} TO</span>}</div>}
+                {(st.teamFouls>0||st.teamTOs>0)&&<div style={{display:"flex",gap:12,marginTop:6,fontSize:10,color:"#666"}}>{st.teamFouls>0&&<span style={{color:"#f97316"}}>{st.teamFouls} fouls</span>}{st.teamTOs>0&&<span style={{color:"#a855f7"}}>{st.teamTOs} TO</span>}</div>}
               </div>
             );
           })}
@@ -392,61 +376,34 @@ export default function App() {
 
   // ═══ TRACKER ═══
   const canRecord = ftMode || activeZone;
+  const Picker = ({ title, sub, subColor, list, onPick, onCancel, cancelLabel }) => (
+    <div style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,0.88)",zIndex:100,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:20}}>
+      {sub&&<div style={{fontSize:12,color:"#888",marginBottom:4,letterSpacing:1,textTransform:"uppercase"}}>{sub}</div>}
+      <div style={{fontSize:18,fontWeight:800,marginBottom:20,color:subColor||"#fff"}}>{title}</div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,width:"100%",maxWidth:480,marginBottom:20}}>
+        {list.map(p=><button key={p.number} onClick={()=>onPick(p.number)} style={{background:"rgba(255,255,255,0.08)",border:"2px solid rgba(255,255,255,0.15)",borderRadius:14,padding:"14px 8px 10px",cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",gap:2,minHeight:64}}>
+          <div style={{fontSize:28,fontWeight:900,color:"#facc15",lineHeight:1}}>{p.number}</div>
+          <div style={{fontSize:10,color:"#aaa",fontWeight:600}}>{p.name}</div>
+        </button>)}
+      </div>
+      <button onClick={onCancel} style={{background:"none",border:"1px solid rgba(255,255,255,0.2)",color:"#888",padding:"12px 28px",borderRadius:8,cursor:"pointer",fontSize:13,minHeight:44}}>{cancelLabel||"Cancel"}</button>
+    </div>
+  );
   return (
     <div style={SHELL}>
-      {/* Player Picker Overlay (for shots) */}
-      {pending && pending.type==="shot" && (
-        <div style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,0.88)",zIndex:100,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:20}}>
-          <div style={{fontSize:12,color:"#888",marginBottom:4,letterSpacing:1,textTransform:"uppercase"}}>{(pending.result==="make"?"Make":"Miss")+(pending.isFT?" (FT)":pending.zone?" — "+(ZONES.find(z=>z.id===pending.zone)?.label||""):"")}</div>
-          <div style={{fontSize:18,fontWeight:800,marginBottom:20,color:pending.result==="make"?"#22c55e":"#ef4444"}}>Who took the shot?</div>
-          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,width:"100%",maxWidth:480,marginBottom:20}}>
-            {sortedPlayers.map(p=><button key={p.number} onClick={()=>pickPlayer(p.number)} style={{background:"rgba(255,255,255,0.08)",border:"2px solid rgba(255,255,255,0.15)",borderRadius:14,padding:"14px 8px 10px",cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",gap:2}}>
-              <div style={{fontSize:28,fontWeight:900,color:"#facc15",lineHeight:1}}>{p.number}</div>
-              <div style={{fontSize:10,color:"#aaa",fontWeight:600}}>{p.name}</div>
-            </button>)}
-          </div>
-          <button onClick={()=>setPending(null)} style={{background:"none",border:"1px solid rgba(255,255,255,0.2)",color:"#888",padding:"10px 28px",borderRadius:8,cursor:"pointer",fontSize:13}}>Cancel</button>
-        </div>
-      )}
-      {/* Assist Picker Overlay */}
-      {pendingAssist && (
-        <div style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,0.88)",zIndex:100,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:20}}>
-          <div style={{fontSize:12,color:"#888",marginBottom:4,letterSpacing:1,textTransform:"uppercase"}}>Make recorded</div>
-          <div style={{fontSize:18,fontWeight:800,marginBottom:20,color:"#22c55e"}}>Assisted by?</div>
-          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,width:"100%",maxWidth:480,marginBottom:20}}>
-            {sortedPlayers.filter(p=>p.number!==pendingAssist.scorerNum).map(p=><button key={p.number} onClick={()=>pickAssist(p.number)} style={{background:"rgba(255,255,255,0.08)",border:"2px solid rgba(255,255,255,0.15)",borderRadius:14,padding:"14px 8px 10px",cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",gap:2}}>
-              <div style={{fontSize:28,fontWeight:900,color:"#facc15",lineHeight:1}}>{p.number}</div>
-              <div style={{fontSize:10,color:"#aaa",fontWeight:600}}>{p.name}</div>
-            </button>)}
-          </div>
-          <button onClick={skipAssist} style={{background:"none",border:"1px solid rgba(255,255,255,0.2)",color:"#888",padding:"10px 28px",borderRadius:8,cursor:"pointer",fontSize:13}}>Skip</button>
-        </div>
-      )}
-      {/* Tally Add Player Overlay */}
-      {pendingTally && (
-        <div style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,0.88)",zIndex:100,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:20}}>
-          <div style={{fontSize:18,fontWeight:800,marginBottom:20,color:CC[pendingTally.type]?.t||"#fff"}}>{pendingTally.label}</div>
-          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,width:"100%",maxWidth:480,marginBottom:20}}>
-            {sortedPlayers.map(p=><button key={p.number} onClick={()=>tallyPickPlayer(p.number)} style={{background:"rgba(255,255,255,0.08)",border:"2px solid rgba(255,255,255,0.15)",borderRadius:14,padding:"14px 8px 10px",cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",gap:2}}>
-              <div style={{fontSize:28,fontWeight:900,color:"#facc15",lineHeight:1}}>{p.number}</div>
-              <div style={{fontSize:10,color:"#aaa",fontWeight:600}}>{p.name}</div>
-            </button>)}
-          </div>
-          <button onClick={()=>setPendingTally(null)} style={{background:"none",border:"1px solid rgba(255,255,255,0.2)",color:"#888",padding:"10px 28px",borderRadius:8,cursor:"pointer",fontSize:13}}>Cancel</button>
-        </div>
-      )}
-      {/* Timeout Picker */}
+      {pending && <Picker title="Who took the shot?" sub={(pending.result==="make"?"Make":"Miss")+(pending.kind==="ft"?" (FT)":pending.zone?" — "+(ZONES.find(z=>z.id===pending.zone)?.label||""):"")} subColor={pending.result==="make"?"#22c55e":"#ef4444"} list={sortedPlayers} onPick={pickPlayer} onCancel={()=>setPending(null)} />}
+      {pendingAssist && <Picker title="Assisted by?" sub="Make recorded" subColor="#22c55e" list={sortedPlayers.filter(p=>p.number!==pendingAssist.scorerNum)} onPick={pickAssist} onCancel={()=>setPendingAssist(null)} cancelLabel="Skip" />}
+      {pendingTally && <Picker title={pendingTally.label} subColor={CC[pendingTally.type]?.t} list={sortedPlayers} onPick={tallyPickPlayer} onCancel={()=>setPendingTally(null)} />}
       {showTOPicker && (
         <div style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,0.88)",zIndex:100,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:20}}>
           <div style={{fontSize:18,fontWeight:800,marginBottom:24,color:"#fff"}}>Call Timeout</div>
           <div style={{display:"flex",flexDirection:"column",gap:12,width:"100%",maxWidth:280}}>
-            <button onClick={()=>handleTimeout(60)} disabled={to60left<=0} style={{padding:"18px 0",borderRadius:14,border:to60left>0?"2px solid rgba(255,255,255,0.2)":"2px solid rgba(255,255,255,0.06)",background:to60left>0?"rgba(255,255,255,0.08)":"rgba(255,255,255,0.02)",cursor:to60left>0?"pointer":"default",textAlign:"center"}}><div style={{fontSize:20,fontWeight:800,color:to60left>0?"#fff":"#333"}}>60 sec</div><div style={{fontSize:12,color:to60left>0?"#888":"#333",marginTop:4}}>{to60left} remaining</div></button>
-            <button onClick={()=>handleTimeout(30)} disabled={to30left<=0} style={{padding:"18px 0",borderRadius:14,border:to30left>0?"2px solid rgba(255,255,255,0.2)":"2px solid rgba(255,255,255,0.06)",background:to30left>0?"rgba(255,255,255,0.08)":"rgba(255,255,255,0.02)",cursor:to30left>0?"pointer":"default",textAlign:"center"}}><div style={{fontSize:20,fontWeight:800,color:to30left>0?"#fff":"#333"}}>30 sec</div><div style={{fontSize:12,color:to30left>0?"#888":"#333",marginTop:4}}>{to30left} remaining</div></button>
+            <button onClick={()=>handleTimeout(60)} disabled={stats.to60left<=0} style={{padding:"18px 0",borderRadius:14,border:stats.to60left>0?"2px solid rgba(255,255,255,0.2)":"2px solid rgba(255,255,255,0.06)",background:stats.to60left>0?"rgba(255,255,255,0.08)":"rgba(255,255,255,0.02)",cursor:stats.to60left>0?"pointer":"default",textAlign:"center"}}><div style={{fontSize:20,fontWeight:800,color:stats.to60left>0?"#fff":"#333"}}>60 sec</div><div style={{fontSize:12,color:stats.to60left>0?"#888":"#333",marginTop:4}}>{stats.to60left} remaining</div></button>
+            <button onClick={()=>handleTimeout(30)} disabled={stats.to30left<=0} style={{padding:"18px 0",borderRadius:14,border:stats.to30left>0?"2px solid rgba(255,255,255,0.2)":"2px solid rgba(255,255,255,0.06)",background:stats.to30left>0?"rgba(255,255,255,0.08)":"rgba(255,255,255,0.02)",cursor:stats.to30left>0?"pointer":"default",textAlign:"center"}}><div style={{fontSize:20,fontWeight:800,color:stats.to30left>0?"#fff":"#333"}}>30 sec</div><div style={{fontSize:12,color:stats.to30left>0?"#888":"#333",marginTop:4}}>{stats.to30left} remaining</div></button>
           </div>
-          <button onClick={()=>setShowTOPicker(false)} style={{background:"none",border:"1px solid rgba(255,255,255,0.2)",color:"#888",padding:"10px 28px",borderRadius:8,cursor:"pointer",fontSize:13,marginTop:20}}>Cancel</button>
+          <button onClick={()=>setShowTOPicker(false)} style={{background:"none",border:"1px solid rgba(255,255,255,0.2)",color:"#888",padding:"12px 28px",borderRadius:8,cursor:"pointer",fontSize:13,marginTop:20,minHeight:44}}>Cancel</button>
         </div>
       )}
-      {/* Opp Foul Input */}
       {showOppFoulInput && (
         <div style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,0.88)",zIndex:100,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:20}}>
           <div style={{fontSize:18,fontWeight:800,marginBottom:20,color:"#ef4444"}}>Opponent Foul</div>
@@ -454,7 +411,7 @@ export default function App() {
             <input value={oppFoulNum} onChange={e=>setOppFoulNum(e.target.value.replace(/\D/g,"").slice(0,3))} placeholder="Opp #" style={{...INP,width:80,textAlign:"center",fontSize:20,fontWeight:800}} inputMode="numeric" autoFocus />
             <button onClick={()=>{if(oppFoulNum.trim()){handleOppFoulAdd(oppFoulNum.trim());setShowOppFoulInput(false);}}} disabled={!oppFoulNum.trim()} style={{flex:1,padding:"12px 0",borderRadius:10,border:"none",fontSize:14,fontWeight:700,cursor:oppFoulNum.trim()?"pointer":"default",background:oppFoulNum.trim()?"#ef4444":"rgba(239,68,68,0.15)",color:oppFoulNum.trim()?"#fff":"rgba(239,68,68,0.4)"}}>Add Foul</button>
           </div>
-          <button onClick={()=>{setShowOppFoulInput(false);setOppFoulNum("");}} style={{background:"none",border:"1px solid rgba(255,255,255,0.2)",color:"#888",padding:"10px 28px",borderRadius:8,cursor:"pointer",fontSize:13}}>Cancel</button>
+          <button onClick={()=>{setShowOppFoulInput(false);setOppFoulNum("");}} style={{background:"none",border:"1px solid rgba(255,255,255,0.2)",color:"#888",padding:"12px 28px",borderRadius:8,cursor:"pointer",fontSize:13,minHeight:44}}>Cancel</button>
         </div>
       )}
 
@@ -462,40 +419,49 @@ export default function App() {
       <div style={{padding:"12px 16px 4px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
         <div>
           <div style={{display:"flex",alignItems:"center"}}><button onClick={()=>setView("history")} style={LINK}>← All Sessions</button><StatusBadge /></div>
-          {editName?<input autoFocus value={teamName} onChange={e=>{setTeamName(e.target.value);setSessions(p=>p.map(s=>s.id===curId?{...s,teamName:e.target.value,team_name:e.target.value}:s));}} onBlur={()=>{setEditName(false);const g=sessions.find(s=>s.id===curId);if(g)saveToDb(g);}} onKeyDown={e=>e.key==="Enter"&&setEditName(false)} placeholder="Team name" style={{background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.2)",color:"#fff",fontSize:16,fontWeight:700,padding:"4px 10px",borderRadius:6,outline:"none",width:200,marginTop:4,display:"block"}} />
+          {editName?<input autoFocus value={teamName} onChange={e=>{setTeamName(e.target.value);setSessions(p=>p.map(s=>s.id===curId?{...s,teamName:e.target.value,team_name:e.target.value}:s));}} onBlur={()=>{setEditName(false);const g=sessions.find(s=>s.id===curId);if(g){try{dbPutGame({...g,teamName,team_name:teamName});}catch(e){}try{enqueue(g.id);}catch(e){}}}} onKeyDown={e=>e.key==="Enter"&&setEditName(false)} placeholder="Team name" style={{background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.2)",color:"#fff",fontSize:16,fontWeight:700,padding:"4px 10px",borderRadius:6,outline:"none",width:200,marginTop:4,display:"block"}} />
           :<div onClick={()=>setEditName(true)} style={{fontSize:16,fontWeight:700,color:teamName?"#fff":"#555",cursor:"pointer",marginTop:2}}>{teamName||"Tap to set name"}<span style={{fontSize:11,color:"#444",marginLeft:6}}>✎</span></div>}
         </div>
         <div style={{display:"flex",alignItems:"center",gap:6}}>
-          <button onClick={backQuarter} style={{background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.1)",color:"#888",fontSize:12,fontWeight:700,padding:"6px 8px",borderRadius:6,cursor:"pointer"}}>◂</button>
-          <button onClick={advanceQuarter} style={{background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.15)",color:"#facc15",fontSize:14,fontWeight:800,padding:"6px 14px",borderRadius:8,cursor:"pointer",minWidth:44,textAlign:"center"}}>{Q_LABELS[quarter]}</button>
-          <button onClick={()=>setShowTOPicker(true)} disabled={anyPending||(to60left<=0&&to30left<=0)} style={{background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.15)",color:anyPending||(to60left<=0&&to30left<=0)?"rgba(255,255,255,0.2)":"#ccc",fontSize:12,fontWeight:700,padding:"6px 10px",borderRadius:6,cursor:anyPending?"default":"pointer"}}>⏱{to60left+to30left}</button>
-          <button onClick={()=>setShowRecent(p=>!p)} style={{background:showRecent?"rgba(250,204,21,0.12)":"rgba(255,255,255,0.08)",border:"1px solid "+(showRecent?"rgba(250,204,21,0.25)":"rgba(255,255,255,0.1)"),color:showRecent?"#facc15":"#999",fontSize:11,padding:"6px 10px",borderRadius:6,cursor:"pointer",letterSpacing:1,textTransform:"uppercase"}}>Recent</button>
+          <button onClick={backQuarter} style={{background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.1)",color:"#888",fontSize:12,fontWeight:700,padding:"10px 12px",borderRadius:6,cursor:"pointer",minHeight:44}}>◂</button>
+          <button onClick={advanceQuarter} style={{background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.15)",color:"#facc15",fontSize:14,fontWeight:800,padding:"10px 16px",borderRadius:8,cursor:"pointer",minWidth:52,minHeight:44,textAlign:"center"}}>{Q_LABELS[quarter]}</button>
+          <button onClick={()=>setShowTOPicker(true)} disabled={anyPending||(stats.to60left<=0&&stats.to30left<=0)} style={{background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.15)",color:anyPending||(stats.to60left<=0&&stats.to30left<=0)?"rgba(255,255,255,0.2)":"#ccc",fontSize:12,fontWeight:700,padding:"10px 12px",borderRadius:6,cursor:anyPending?"default":"pointer",minHeight:44}}>⏱{stats.to60left+stats.to30left}</button>
+          <button onClick={()=>setShowRecent(p=>!p)} style={{background:showRecent?"rgba(250,204,21,0.12)":"rgba(255,255,255,0.08)",border:"1px solid "+(showRecent?"rgba(250,204,21,0.25)":"rgba(255,255,255,0.1)"),color:showRecent?"#facc15":"#999",fontSize:11,padding:"10px 12px",borderRadius:6,cursor:"pointer",letterSpacing:1,textTransform:"uppercase",minHeight:44}}>Recent</button>
         </div>
       </div>
 
       {/* Banners */}
       {foulWarning&&<div style={{margin:"0 16px 4px",padding:"8px 12px",background:"rgba(239,68,68,0.15)",border:"1px solid rgba(239,68,68,0.4)",borderRadius:8,fontSize:13,fontWeight:700,color:"#ef4444",textAlign:"center"}}>⚠ {foulWarning}</div>}
-      {inBonus&&<div style={{margin:"0 16px 4px",padding:"6px 12px",background:"rgba(239,68,68,0.1)",border:"1px solid rgba(239,68,68,0.25)",borderRadius:8,fontSize:11,fontWeight:700,color:"#ef4444",textAlign:"center"}}>BONUS — {qtrFouls} team fouls in {Q_LABELS[quarter]}</div>}
-      {oppInBonus&&<div style={{margin:"0 16px 4px",padding:"6px 12px",background:"rgba(34,197,94,0.1)",border:"1px solid rgba(34,197,94,0.25)",borderRadius:8,fontSize:11,fontWeight:700,color:"#22c55e",textAlign:"center"}}>OPP BONUS — {oppQtrFouls} opponent fouls in {Q_LABELS[quarter]}</div>}
+      {inBonus&&<div style={{margin:"0 16px 4px",padding:"6px 12px",background:"rgba(239,68,68,0.1)",border:"1px solid rgba(239,68,68,0.25)",borderRadius:8,fontSize:11,fontWeight:700,color:"#ef4444",textAlign:"center"}}>BONUS — {qtrFoulsNow} team fouls in {Q_LABELS[quarter]}</div>}
+      {oppInBonus&&<div style={{margin:"0 16px 4px",padding:"6px 12px",background:"rgba(34,197,94,0.1)",border:"1px solid rgba(34,197,94,0.25)",borderRadius:8,fontSize:11,fontWeight:700,color:"#22c55e",textAlign:"center"}}>OPP BONUS — {oppQtrFoulsNow} opponent fouls in {Q_LABELS[quarter]}</div>}
 
       {/* Recent Panel */}
       {showRecent&&<div style={{margin:"0 16px 8px",background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:10,overflow:"hidden"}}>
         <div style={{padding:"8px 12px 6px",fontSize:10,color:"#555",letterSpacing:1,textTransform:"uppercase"}}>Last {Math.min(recentActions.length,15)} actions</div>
         {recentActions.length===0?<div style={{padding:"12px",fontSize:12,color:"#444",textAlign:"center"}}>No actions yet</div>:
         <div style={{maxHeight:220,overflowY:"auto"}}>{recentActions.map((item,i)=>{
-          const desc=describeAction(item,players);
-          const isShot=item.result!==undefined;
-          const dot=isShot?(item.result==="make"?"#22c55e":"#ef4444"):item.type==="foul"?"#f97316":item.type==="opp_foul"?"#ef4444":item.type==="turnover"?"#a855f7":item.type==="rebound"?"#22c55e":item.type==="steal"?"#3b82f6":item.type==="block"?"#ec4899":item.type==="assist"?"#22c55e":"#888";
-          return <div key={item.id+"-"+i} style={{display:"flex",alignItems:"center",padding:"6px 12px",borderTop:i>0?"1px solid rgba(255,255,255,0.04)":"none"}}><div style={{width:6,height:6,borderRadius:3,background:dot,flexShrink:0,marginRight:8}} /><div style={{flex:1,fontSize:11,color:"#aaa",lineHeight:1.3}}>{desc}</div><button onClick={()=>deleteAction(item)} style={{background:"none",border:"none",color:"#555",fontSize:16,cursor:"pointer",padding:"2px 4px",marginLeft:6}}>✕</button></div>;
+          const desc=describeEvent(item,players);
+          const dot=item.type==="shot_attempt"?(item.result==="make"?"#22c55e":"#ef4444"):item.type==="free_throw_attempt"?(item.result==="make"?"#818cf8":"#ef4444"):item.type==="stat_tally"?(CC[item.stat]?.t||"#888"):"#888";
+          return <div key={item.id} style={{display:"flex",alignItems:"center",padding:"6px 12px",borderTop:i>0?"1px solid rgba(255,255,255,0.04)":"none"}}><div style={{width:6,height:6,borderRadius:3,background:dot,flexShrink:0,marginRight:8}} /><div style={{flex:1,fontSize:11,color:"#aaa",lineHeight:1.3}}>{desc}</div><TapBtn onTap={()=>deleteAction(item)} size={40} fontSize={14} color="#555">✕</TapBtn></div>;
         })}</div>}
       </div>}
 
       {/* Score bar */}
       <div style={{display:"flex",justifyContent:"center",gap:14,padding:"6px 16px",flexWrap:"wrap",alignItems:"center"}}>
-        <StatBox label="PTS" value={totalPts} color="#facc15" />
-        <StatBox label="FG" value={fgMakes+"/"+fgTotal} color="#22c55e" />
-        <StatBox label="FG%" value={fgTotal?fgPct+"":"0"} color={fgPct>=50?"#22c55e":fgPct>=35?"#facc15":"#ef4444"} />
-        <StatBox label="FT" value={ftMakes+"/"+ftTotal} color="#818cf8" />
+        <StatBox label="PTS" value={stats.totalPts} color="#facc15" />
+        <StatBox label="FG" value={stats.fgMakes+"/"+stats.fgTotal} color="#22c55e" />
+        <StatBox label="FG%" value={stats.fgTotal?stats.fgPct+"":"0"} color={stats.fgPct>=50?"#22c55e":stats.fgPct>=35?"#facc15":"#ef4444"} />
+        <StatBox label="FT" value={stats.ftMakes+"/"+stats.ftTotal} color="#818cf8" />
+      </div>
+
+      {/* Opponent bar — Phase 3 will add US/THEM scoreboard and +1/+2/+3 here */}
+      <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:16,padding:"4px 16px 6px"}}>
+        <div style={{display:"flex",alignItems:"center",gap:8,background:"rgba(239,68,68,0.06)",border:"1px solid rgba(239,68,68,0.15)",borderRadius:10,padding:"6px 14px"}}>
+          <span style={{fontSize:11,color:"#ef4444",fontWeight:700,letterSpacing:0.5}}>OPP ORB</span>
+          <TapBtn onTap={()=>{const t=lastActiveTally(logRef.current,"opp_rebound_off",undefined);if(t)append("reversal",{targetId:t.id});}} size={40} fontSize={16} color="#555">-</TapBtn>
+          <span style={{fontSize:18,fontWeight:800,color:stats.oppOrbTotal>0?"#ef4444":"#444",minWidth:20,textAlign:"center"}}>{stats.oppOrbTotal}</span>
+          <TapBtn onTap={()=>append("stat_tally",{stat:"opp_rebound_off"})} size={40} fontSize={16} color="#555">+</TapBtn>
+        </div>
       </div>
 
       {/* ═══ TWO-COLUMN LAYOUT ═══ */}
@@ -511,7 +477,7 @@ export default function App() {
               <rect x="130" y="0" width="140" height="110" fill="none" stroke="rgba(255,180,50,0.25)" strokeWidth="1.5" />
               <circle cx="200" cy="110" r="60" fill="none" stroke="rgba(255,180,50,0.2)" strokeWidth="1" strokeDasharray="4,4" />
               <path d="M 40,0 L 40,80 Q 40,250 200,270 Q 360,250 360,80 L 360,0" fill="none" stroke="rgba(255,180,50,0.25)" strokeWidth="1.5" />
-              {ZONES.map(z=>{const s=zoneStats[z.id];const pct=s&&s.total?Math.round(s.makes/s.total*100):null;const isA=activeZone===z.id;return(
+              {ZONES.map(z=>{const s=zoneStats[z.id];const isA=activeZone===z.id;return(
                 <g key={z.id} onClick={()=>handleZoneTap(z.id)} style={{cursor:"pointer"}}>
                   <rect x={z.x} y={z.y} width={z.w} height={z.h} rx="8" fill={isA?"rgba(255,255,255,0.15)":getZoneColor(z.id)} stroke={getZoneBorder(z.id)} strokeWidth={isA?2.5:2} style={{transition:"fill 0.2s"}} />
                   {s&&s.total>0?<><text x={z.cx} y={z.cy-2} textAnchor="middle" fill={getZoneText(z.id)} fontSize="14" fontWeight="800" style={{pointerEvents:"none"}}>{z.label}</text><text x={z.cx} y={z.cy+14} textAnchor="middle" fill="#fff" fontSize="12" fontWeight="600" style={{pointerEvents:"none"}}>{s.makes}/{s.total}</text></>
@@ -525,19 +491,18 @@ export default function App() {
           {!ftMode&&activeZone&&<div style={{textAlign:"center",padding:"2px 0"}}><span style={{color:"#facc15",fontSize:12,fontWeight:600}}>{ZONES.find(z=>z.id===activeZone)?.label}</span><span style={{color:"#444",fontSize:12}}> — tap Make or Miss</span></div>}
 
           <div style={{display:"flex",gap:8,marginTop:6}}>
-            <button onClick={()=>handleMakeMiss("make")} disabled={!canRecord||anyPending} style={{flex:1,padding:"14px 0",borderRadius:12,border:"none",fontSize:18,fontWeight:800,letterSpacing:2,cursor:canRecord&&!anyPending?"pointer":"default",background:canRecord&&!anyPending?(ftMode?"#818cf8":"#22c55e"):(ftMode?"rgba(129,140,248,0.15)":"rgba(34,197,94,0.15)"),color:canRecord&&!anyPending?"#000":(ftMode?"rgba(129,140,248,0.4)":"rgba(34,197,94,0.4)"),transition:"all 0.2s"}}>MAKE</button>
-            <button onClick={()=>handleMakeMiss("miss")} disabled={!canRecord||anyPending} style={{flex:1,padding:"14px 0",borderRadius:12,border:"none",fontSize:18,fontWeight:800,letterSpacing:2,cursor:canRecord&&!anyPending?"pointer":"default",background:canRecord&&!anyPending?"#ef4444":"rgba(239,68,68,0.15)",color:canRecord&&!anyPending?"#fff":"rgba(239,68,68,0.4)",transition:"all 0.2s"}}>MISS</button>
+            <button onClick={()=>handleMakeMiss("make")} disabled={!canRecord||anyPending} style={{flex:1,padding:"14px 0",borderRadius:12,border:"none",fontSize:18,fontWeight:800,letterSpacing:2,cursor:canRecord&&!anyPending?"pointer":"default",background:canRecord&&!anyPending?(ftMode?"#818cf8":"#22c55e"):(ftMode?"rgba(129,140,248,0.15)":"rgba(34,197,94,0.15)"),color:canRecord&&!anyPending?"#000":(ftMode?"rgba(129,140,248,0.4)":"rgba(34,197,94,0.4)"),transition:"all 0.2s",minHeight:52}}>MAKE</button>
+            <button onClick={()=>handleMakeMiss("miss")} disabled={!canRecord||anyPending} style={{flex:1,padding:"14px 0",borderRadius:12,border:"none",fontSize:18,fontWeight:800,letterSpacing:2,cursor:canRecord&&!anyPending?"pointer":"default",background:canRecord&&!anyPending?"#ef4444":"rgba(239,68,68,0.15)",color:canRecord&&!anyPending?"#fff":"rgba(239,68,68,0.4)",transition:"all 0.2s",minHeight:52}}>MISS</button>
           </div>
 
           {!ftMode&&!activeZone&&!anyPending&&<div style={{textAlign:"center",padding:"4px 0",color:"#444",fontSize:11}}>Tap a zone, then Make or Miss</div>}
 
           {/* Compact cards: FT, Steals, Blocks, Opp Fouls */}
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginTop:8}}>
-            {/* FT Card (toggles FT mode) */}
-            <div onClick={()=>{setFtMode(p=>!p);setActiveZone(null);setPending(null);}} style={{background:ftMode?CC.ft.bg:"rgba(129,140,248,0.05)",border:ftMode?"2px solid #818cf8":"1.5px solid "+CC.ft.bd,borderRadius:10,padding:"8px 10px",cursor:"pointer"}}>
+            <div onClick={()=>{setFtMode(p=>!p);setActiveZone(null);setPending(null);}} style={{background:ftMode?CC.ft.bg:"rgba(129,140,248,0.05)",border:ftMode?"2px solid #818cf8":"1.5px solid "+CC.ft.bd,borderRadius:10,padding:"8px 10px",cursor:"pointer",touchAction:"manipulation"}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:ftData.length>0?4:0}}>
                 <span style={{fontSize:12,fontWeight:800,color:"#818cf8"}}>Free throws</span>
-                <span style={{fontSize:11,color:"#818cf8",fontWeight:700}}>{ftMakes}/{ftTotal}</span>
+                <span style={{fontSize:11,color:"#818cf8",fontWeight:700}}>{stats.ftMakes}/{stats.ftTotal}</span>
               </div>
               {ftData.map(e=><div key={e.num} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"2px 0"}}><span style={{fontSize:11,color:"#ccc"}}>#{e.num} {e.name}</span><span style={{fontSize:11,color:"#888"}}>{e.made}/{e.att}</span></div>)}
               {ftMode&&<div style={{textAlign:"center",fontSize:10,color:"#818cf8",fontWeight:700,marginTop:4}}>TAP TO EXIT FT MODE</div>}
@@ -546,23 +511,22 @@ export default function App() {
             <TallyCard title="Steals" type="steal" entries={stlEntries} compact onAdd={()=>setPendingTally({type:"steal",label:"Who got the steal?"})} onInc={(n)=>incrementStat("steal",n)} onDec={(n)=>decrementStat("steal",n)} />
             <TallyCard title="Blocks" type="block" entries={blkEntries} compact onAdd={()=>setPendingTally({type:"block",label:"Who blocked it?"})} onInc={(n)=>incrementStat("block",n)} onDec={(n)=>decrementStat("block",n)} />
 
-            {/* Opp Fouls card */}
             <div style={{background:CC.opp_foul.bg,border:"1.5px solid "+CC.opp_foul.bd,borderRadius:10,padding:"8px 10px"}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:oppFoulEntries.length>0?4:0}}>
                 <span style={{fontSize:12,fontWeight:800,color:"#ef4444"}}>Opp fouls</span>
-                <span style={{fontSize:11,color:"#ef4444",fontWeight:700}}>{oppFoulEvents.length}</span>
+                <span style={{fontSize:11,color:"#ef4444",fontWeight:700}}>{stats.oppTotalFouls}</span>
               </div>
-              {oppFoulEntries.map(e=><div key={e.num} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"2px 0"}}>
+              {oppFoulEntries.map(e=><div key={e.num} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"1px 0"}}>
                 <span style={{fontSize:11,color:"#ccc"}}>#{e.num}</span>
-                <div style={{display:"flex",alignItems:"center",gap:4}}><span onClick={()=>decrementStat("opp_foul",e.num)} style={{color:"#555",fontSize:14,cursor:"pointer"}}>-</span><span style={{fontSize:13,fontWeight:800,color:e.count>=4?"#ef4444":"#f97316",minWidth:14,textAlign:"center"}}>{e.count}</span><span onClick={()=>incrementStat("opp_foul",e.num)} style={{color:"#555",fontSize:14,cursor:"pointer"}}>+</span></div>
+                <div style={{display:"flex",alignItems:"center"}}><TapBtn onTap={()=>decrementStat("opp_foul",e.num)} size={40} fontSize={16}>-</TapBtn><span style={{fontSize:14,fontWeight:800,color:e.count>=4?"#ef4444":"#f97316",minWidth:16,textAlign:"center"}}>{e.count}</span><TapBtn onTap={()=>incrementStat("opp_foul",e.num)} size={40} fontSize={16}>+</TapBtn></div>
               </div>)}
-              <div onClick={()=>{setShowOppFoulInput(true);setOppFoulNum("");}} style={{textAlign:"center",color:"#ef4444",fontSize:18,cursor:"pointer",marginTop:oppFoulEntries.length>0?4:2}}>+</div>
+              <div onClick={()=>{setShowOppFoulInput(true);setOppFoulNum("");}} style={{textAlign:"center",color:"#ef4444",fontSize:18,cursor:"pointer",marginTop:oppFoulEntries.length>0?2:0,minHeight:40,display:"flex",alignItems:"center",justifyContent:"center",touchAction:"manipulation"}}>+</div>
             </div>
           </div>
         </div>
 
         {/* RIGHT: Tall tally cards */}
-        <div style={{width:220,display:"flex",flexDirection:"column",gap:8,flexShrink:0}}>
+        <div style={{width:230,display:"flex",flexDirection:"column",gap:8,flexShrink:0}}>
           <TallyCard title="Rebounds" type="rebound" entries={rebEntries} onAdd={()=>setPendingTally({type:"rebound",label:"Who rebounded?"})} onInc={(n)=>incrementStat("rebound",n)} onDec={(n)=>decrementStat("rebound",n)} />
           <TallyCard title="Assists" type="assist" entries={astEntries} onAdd={()=>setPendingTally({type:"assist",label:"Who got the assist?"})} onInc={(n)=>incrementStat("assist",n)} onDec={(n)=>decrementStat("assist",n)} />
           <TallyCard title="Fouls" type="foul" entries={foulEntries} warnAt={4} onAdd={()=>setPendingTally({type:"foul",label:"Who fouled?"})} onInc={(n)=>incrementStat("foul",n)} onDec={(n)=>decrementStat("foul",n)} />
@@ -572,48 +536,36 @@ export default function App() {
 
       {/* Player Stats Toggle + Export */}
       <div style={{padding:"8px 16px",display:"flex",gap:8}}>
-        <button onClick={()=>setShowStats(p=>!p)} style={{flex:1,background:showStats?"rgba(250,204,21,0.15)":"rgba(255,255,255,0.04)",border:"1px solid "+(showStats?"rgba(250,204,21,0.3)":"rgba(255,255,255,0.08)"),color:showStats?"#facc15":"#888",fontSize:12,fontWeight:700,padding:"10px 24px",borderRadius:10,cursor:"pointer"}}>{showStats?"▾ Hide player stats":"▸ Player stats and breakdown"}</button>
-        <button onClick={()=>{const g=sessions.find(s=>s.id===curId);if(g)exportGamePdf({...g,shots,events,players,quarter});}} style={{background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",color:"#888",fontSize:12,fontWeight:700,padding:"10px 16px",borderRadius:10,cursor:"pointer"}}>Export PDF</button>
+        <button onClick={()=>setShowStats(p=>!p)} style={{flex:1,background:showStats?"rgba(250,204,21,0.15)":"rgba(255,255,255,0.04)",border:"1px solid "+(showStats?"rgba(250,204,21,0.3)":"rgba(255,255,255,0.08)"),color:showStats?"#facc15":"#888",fontSize:12,fontWeight:700,padding:"12px 24px",borderRadius:10,cursor:"pointer",minHeight:44}}>{showStats?"▾ Hide player stats":"▸ Player stats and breakdown"}</button>
+        <button onClick={()=>{const g=sessions.find(s=>s.id===curId);if(g)exportGamePdf({...g,events:eventLog,shots:[],players,quarter,teamName,team_name:teamName});}} style={{background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",color:"#888",fontSize:12,fontWeight:700,padding:"12px 16px",borderRadius:10,cursor:"pointer",minHeight:44}}>Export PDF</button>
       </div>
 
       {showStats&&players.length>0&&<div style={{padding:"0 16px 16px"}}>
         <div style={{background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.06)",borderRadius:12,overflow:"hidden"}}>
-          {/* Grid header */}
           <div style={{display:"grid",gridTemplateColumns:"90px repeat(9,minmax(0,1fr))",borderBottom:"1px solid rgba(255,255,255,0.08)"}}>
             <div style={{padding:"10px 10px",fontSize:10,color:"#555",letterSpacing:1}}>PLAYER</div>
             {[{l:"PTS",c:"#facc15"},{l:"FG",c:"#22c55e"},{l:"FT",c:"#818cf8"},{l:"AST",c:"#22c55e"},{l:"REB",c:"#22c55e"},{l:"STL",c:"#3b82f6"},{l:"BLK",c:"#ec4899"},{l:"FLS",c:"#f97316"},{l:"TO",c:"#a855f7"}].map(h=>
               <div key={h.l} style={{padding:"10px 2px",fontSize:10,color:h.c,letterSpacing:0.5,textAlign:"center"}}>{h.l}</div>
             )}
           </div>
-          {/* Player rows */}
           {sortedPlayers.map((p,ri)=>{
-            const pS=shots.filter(s=>s.playerNum===p.number);
-            const pFG=pS.filter(s=>!s.isFT); const pFT=pS.filter(s=>s.isFT);
-            const pFGm=pFG.filter(s=>s.result==="make").length; const pFTm=pFT.filter(s=>s.result==="make").length;
-            const pPts=pS.reduce((sum,s)=>sum+getPoints(s),0);
-            const ast=events.filter(e=>e.type==="assist"&&e.playerNum===p.number).length+shots.filter(s=>s.assistNum===p.number).length;
-            const reb=events.filter(e=>e.type==="rebound"&&e.playerNum===p.number).length;
-            const stl=events.filter(e=>e.type==="steal"&&e.playerNum===p.number).length;
-            const blk=events.filter(e=>e.type==="block"&&e.playerNum===p.number).length;
-            const fls=events.filter(e=>e.type==="foul"&&e.playerNum===p.number).length;
-            const to=events.filter(e=>e.type==="turnover"&&e.playerNum===p.number).length;
-            const flsColor=fls>=4?"#ef4444":fls>=3?"#f97316":"#f97316";
-            const PM=({val,color,type:t})=><div style={{textAlign:"center"}}><div style={{display:"inline-flex",alignItems:"center",gap:2}}><span onClick={()=>decrementStat(t,p.number)} style={{color:"#444",fontSize:18,cursor:"pointer",padding:"4px 6px",lineHeight:1}}>-</span><span style={{fontSize:15,fontWeight:800,color:val>0?color:"#444",minWidth:16,textAlign:"center"}}>{val}</span><span onClick={()=>incrementStat(t,p.number)} style={{color:"#444",fontSize:18,cursor:"pointer",padding:"4px 6px",lineHeight:1}}>+</span></div></div>;
+            const ps = stats.players[p.number] || { pts:0,fgm:0,fga:0,ftm:0,fta:0,ast:0,reb:0,stl:0,blk:0,fouls:0,tos:0 };
+            const PM=({val,color,type:t})=><div style={{textAlign:"center"}}><div style={{display:"inline-flex",alignItems:"center"}}><TapBtn onTap={()=>decrementStat(t,p.number)} size={44} fontSize={18}>-</TapBtn><span style={{fontSize:15,fontWeight:800,color:val>0?color:"#444",minWidth:18,textAlign:"center"}}>{val}</span><TapBtn onTap={()=>incrementStat(t,p.number)} size={44} fontSize={18}>+</TapBtn></div></div>;
             return (
               <div key={p.number} style={{display:"grid",gridTemplateColumns:"90px repeat(9,minmax(0,1fr))",alignItems:"center",borderBottom:ri<sortedPlayers.length-1?"1px solid rgba(255,255,255,0.04)":"none",background:ri%2===0?"rgba(250,204,21,0.02)":"transparent"}}>
                 <div style={{padding:"8px 10px",display:"flex",alignItems:"center",gap:6}}>
                   <div style={{width:28,height:28,borderRadius:6,background:"rgba(250,204,21,0.15)",border:"1px solid rgba(250,204,21,0.3)",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:800,color:"#facc15",fontSize:12,flexShrink:0}}>{p.number}</div>
                   <span style={{fontSize:12,fontWeight:600,color:"#ccc",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.name}</span>
                 </div>
-                <div style={{textAlign:"center",fontSize:18,fontWeight:800,color:"#facc15"}}>{pPts}</div>
-                <div style={{textAlign:"center",fontSize:11,color:pFG.length>0?"#888":"#444"}}>{pFGm}/{pFG.length}</div>
-                <div style={{textAlign:"center",fontSize:11,color:pFT.length>0?"#888":"#444"}}>{pFTm}/{pFT.length}</div>
-                <PM val={ast} color="#22c55e" type="assist" />
-                <PM val={reb} color="#22c55e" type="rebound" />
-                <PM val={stl} color="#3b82f6" type="steal" />
-                <PM val={blk} color="#ec4899" type="block" />
-                <PM val={fls} color={flsColor} type="foul" />
-                <PM val={to} color="#a855f7" type="turnover" />
+                <div style={{textAlign:"center",fontSize:18,fontWeight:800,color:"#facc15"}}>{ps.pts}</div>
+                <div style={{textAlign:"center",fontSize:11,color:ps.fga>0?"#888":"#444"}}>{ps.fgm}/{ps.fga}</div>
+                <div style={{textAlign:"center",fontSize:11,color:ps.fta>0?"#888":"#444"}}>{ps.ftm}/{ps.fta}</div>
+                <PM val={ps.ast} color="#22c55e" type="assist" />
+                <PM val={ps.reb} color="#22c55e" type="rebound" />
+                <PM val={ps.stl} color="#3b82f6" type="steal" />
+                <PM val={ps.blk} color="#ec4899" type="block" />
+                <PM val={ps.fouls} color={ps.fouls>=4?"#ef4444":"#f97316"} type="foul" />
+                <PM val={ps.tos} color="#a855f7" type="turnover" />
               </div>
             );
           })}
