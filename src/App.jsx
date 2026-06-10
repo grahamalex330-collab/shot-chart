@@ -62,6 +62,7 @@ export default function App(){
   const[oppFoulNum,setOppFoulNum]=useState("");
   const[showStats,setShowStats]=useState(false);
   const[showYearStats,setShowYearStats]=useState(false);
+  const[pmDrill,setPmDrill]=useState(null);
   const[showRecent,setShowRecent]=useState(false);
   const[foulWarning,setFoulWarning]=useState(null);
   const[rName,setRName]=useState("");
@@ -285,7 +286,25 @@ export default function App(){
         <div style={{padding:"4px 16px 20px",display:"flex",flexDirection:"column",gap:8}}>
           {(()=>{
             let yP=0,yFGm=0,yFGa=0,yFTm=0,yFTa=0,yA=0,yR=0,yS=0,yB=0,yF=0,yT=0,any=false;
-            for(const s of sessions){const st=computeGameStats(toEventLog(s),s.players||[]);if(st.activeEvents.length>0)any=true;yP+=st.totalPts;yFGm+=st.fgMakes;yFGa+=st.fgTotal;yFTm+=st.ftMakes;yFTa+=st.ftTotal;yA+=st.teamAst;yR+=st.teamReb;yS+=st.teamStl;yB+=st.teamBlk;yF+=st.teamFouls;yT+=st.teamTOs;}
+            const pmByPlayer={};const gameStats=[];
+            for(const s of sessions){
+              const st=computeGameStats(toEventLog(s),s.players||[]);
+              if(st.activeEvents.length>0)any=true;
+              yP+=st.totalPts;yFGm+=st.fgMakes;yFGa+=st.fgTotal;yFTm+=st.ftMakes;yFTa+=st.ftTotal;yA+=st.teamAst;yR+=st.teamReb;yS+=st.teamStl;yB+=st.teamBlk;yF+=st.teamFouls;yT+=st.teamTOs;
+              gameStats.push({name:s.teamName||s.team_name||"Game",date:s.created_at,st});
+              // Accumulate PM per player
+              for(const[num,ps] of Object.entries(st.players)){
+                if(!pmByPlayer[num])pmByPlayer[num]={num,name:"",gp:0,cumTeam:0,cumOpp:0,games:[]};
+                const pp=pmByPlayer[num];
+                // Find name from any roster
+                if(!pp.name){const rp=(s.players||[]).find(x=>x.number===num);if(rp)pp.name=rp.name;}
+                if(ps.checkedIn){
+                  pp.gp++;pp.cumTeam+=ps.teamPtsOn;pp.cumOpp+=ps.oppPtsOn;
+                  pp.games.push({name:s.teamName||s.team_name||"Game",date:s.created_at,pm:ps.teamPtsOn-ps.oppPtsOn,teamOn:ps.teamPtsOn,oppOn:ps.oppPtsOn,stints:st.stints.filter(sn=>sn.players.includes(num))});
+                }
+              }
+            }
+            const pmList=Object.values(pmByPlayer).filter(p=>p.gp>0).sort((a,b)=>(b.cumTeam-b.cumOpp)-(a.cumTeam-a.cumOpp));
             if(!any)return null;
             const n=sessions.length;
             return(<><button onClick={()=>setShowYearStats(p=>!p)} style={{background:showYearStats?"rgba(250,204,21,0.12)":"rgba(255,255,255,0.04)",border:"1px solid "+(showYearStats?"rgba(250,204,21,0.25)":"rgba(255,255,255,0.08)"),color:showYearStats?"#facc15":"#888",fontSize:12,fontWeight:700,padding:"10px 16px",borderRadius:10,cursor:"pointer",textAlign:"center"}}>{showYearStats?"▾ Hide Season Stats":"▸ Season Stats — "+n+" Game"+(n!==1?"s":"")+" · "+yP+" Total Pts"}</button>
@@ -303,6 +322,47 @@ export default function App(){
                 <div style={{textAlign:"center"}}><div style={{fontSize:16,fontWeight:800,color:"#f97316"}}>{yF}</div><div style={{fontSize:8,color:"#666"}}>FOULS</div></div>
                 <div style={{textAlign:"center"}}><div style={{fontSize:16,fontWeight:800,color:"#a855f7"}}>{yT}</div><div style={{fontSize:8,color:"#666"}}>TO</div></div>
               </div>
+
+              {/* Season Plus/Minus */}
+              {pmList.length>0&&<>
+                <div style={{...SECHEAD,marginTop:14}}>Season Plus/Minus</div>
+                <div style={{borderRadius:8,overflow:"hidden",border:"1px solid rgba(255,255,255,0.06)"}}>
+                  <div style={{display:"grid",gridTemplateColumns:"30px 1fr 50px 40px 50px 50px",padding:"6px 8px",borderBottom:"1px solid rgba(255,255,255,0.06)"}}>
+                    <div style={{fontSize:8,color:"#555"}}>#</div><div style={{fontSize:8,color:"#555"}}>NAME</div><div style={{fontSize:8,color:"#facc15",textAlign:"center"}}>+/-</div><div style={{fontSize:8,color:"#555",textAlign:"center"}}>GP</div><div style={{fontSize:8,color:"#555",textAlign:"center"}}>AVG</div><div style={{fontSize:8,color:"#555",textAlign:"center"}}>▾</div>
+                  </div>
+                  {pmList.map(p=>{
+                    const pm=p.cumTeam-p.cumOpp;const avg=p.gp>0?(pm/p.gp).toFixed(1):"—";const open=pmDrill===p.num;
+                    return(<div key={p.num}>
+                      <div onClick={()=>setPmDrill(open?null:p.num)} style={{display:"grid",gridTemplateColumns:"30px 1fr 50px 40px 50px 50px",padding:"8px 8px",cursor:"pointer",background:open?"rgba(250,204,21,0.06)":"transparent",borderBottom:"1px solid rgba(255,255,255,0.03)"}}>
+                        <div style={{fontSize:12,fontWeight:800,color:"#facc15"}}>{p.num}</div>
+                        <div style={{fontSize:12,fontWeight:600,color:"#ccc"}}>{p.name||"#"+p.num}</div>
+                        <div style={{fontSize:14,fontWeight:800,color:pm>0?"#22c55e":pm<0?"#ef4444":"#888",textAlign:"center"}}>{pm>0?"+":""}{pm}</div>
+                        <div style={{fontSize:11,color:"#888",textAlign:"center"}}>{p.gp}</div>
+                        <div style={{fontSize:11,color:parseFloat(avg)>0?"#22c55e":parseFloat(avg)<0?"#ef4444":"#888",textAlign:"center"}}>{avg}</div>
+                        <div style={{fontSize:11,color:"#555",textAlign:"center"}}>{open?"▾":"▸"}</div>
+                      </div>
+                      {open&&<div style={{padding:"4px 8px 8px",background:"rgba(255,255,255,0.02)"}}>
+                        <div style={{display:"grid",gridTemplateColumns:"1fr 50px 50px 50px",gap:2,marginBottom:4}}>
+                          <div style={{fontSize:8,color:"#555"}}>GAME</div><div style={{fontSize:8,color:"#facc15",textAlign:"center"}}>+/-</div><div style={{fontSize:8,color:"#555",textAlign:"center"}}>TEAM</div><div style={{fontSize:8,color:"#555",textAlign:"center"}}>OPP</div>
+                        </div>
+                        {p.games.map((g,gi)=>{const gpm=g.pm;return(
+                          <div key={gi} style={{display:"grid",gridTemplateColumns:"1fr 50px 50px 50px",gap:2,padding:"3px 0",borderTop:gi>0?"1px solid rgba(255,255,255,0.03)":"none"}}>
+                            <div style={{fontSize:10,color:"#888",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{g.name}</div>
+                            <div style={{fontSize:11,fontWeight:700,color:gpm>0?"#22c55e":gpm<0?"#ef4444":"#888",textAlign:"center"}}>{gpm>0?"+":""}{gpm}</div>
+                            <div style={{fontSize:10,color:"#888",textAlign:"center"}}>{g.teamOn}</div>
+                            <div style={{fontSize:10,color:"#888",textAlign:"center"}}>{g.oppOn}</div>
+                          </div>);})}
+                        {p.games.some(g=>g.stints.length>0)&&<div style={{marginTop:6}}><div style={{fontSize:8,color:"#555",marginBottom:3}}>STINTS</div>
+                          {p.games.filter(g=>g.stints.length>0).map((g,gi)=>g.stints.map((sn,si)=><div key={gi+"-"+si} style={{fontSize:9,color:"#666",padding:"2px 0"}}>
+                            {sn.players.map(x=>"#"+x).join(", ")} — {sn.ptsFor}:{sn.ptsAgainst} ({sn.diff>0?"+":""}{sn.diff})
+                          </div>))}
+                        </div>}
+                      </div>}
+                    </div>);
+                  })}
+                </div>
+                <div style={{fontSize:9,color:"#555",marginTop:6}}>Cumulative +/- is the sum of game values. Average is cumulative ÷ games where the player checked in. This is not adjusted plus/minus.</div>
+              </>}
             </div>}</>);
           })()}
           {sessions.map(s=>{
@@ -383,7 +443,7 @@ export default function App(){
       {showQtrTransition&&(
         <div style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,0.92)",zIndex:100,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:20}}>
           <div style={{fontSize:18,fontWeight:800,marginBottom:4,color:"#fff"}}>{Q_LABELS[quarter]} → {Q_LABELS[(quarter+1)%Q_LABELS.length]}</div>
-          <div style={{fontSize:14,color:"#facc15",marginBottom:8}}>US {stats.totalPts} — THEM {stats.oppScore}</div>
+          <div style={{fontSize:14,color:"#facc15",marginBottom:8}}>WOLVES {stats.totalPts} — BAD GUYS {stats.oppScore}</div>
           {hasLineup&&<div style={{fontSize:12,color:"#888",marginBottom:20}}>Current: {onCourtNames.map(p=>"#"+p.number).join(", ")}</div>}
           <div style={{display:"flex",gap:12}}>
             <button onClick={carryLineup} style={{padding:"16px 28px",borderRadius:14,border:"none",fontSize:14,fontWeight:800,background:"#22c55e",color:"#000",cursor:"pointer",minHeight:52}}>Carry lineup →</button>
@@ -439,15 +499,15 @@ export default function App(){
         <button onClick={()=>{setSubOut(null);setSubIn(null);setShowSubFlow(true);}} style={{background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.15)",color:"#facc15",fontSize:12,fontWeight:800,padding:"8px 16px",borderRadius:8,cursor:"pointer",minHeight:44,letterSpacing:1}}>SUB</button>
       </div>}
 
-      {/* US / THEM SCORE BAR */}
+      {/* WOLVES / BAD GUYS SCORE BAR */}
       <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:12,padding:"4px 16px 2px",flexWrap:"wrap"}}>
         <div style={{display:"flex",alignItems:"center",gap:8}}>
-          <span style={{fontSize:11,color:"#888",letterSpacing:1}}>US</span>
+          <span style={{fontSize:11,color:"#888",letterSpacing:1}}>WOLVES</span>
           <span style={{fontSize:28,fontWeight:900,color:"#facc15"}}>{stats.totalPts}</span>
         </div>
         <div style={{width:1,height:24,background:"rgba(255,255,255,0.1)"}}/>
         <div style={{display:"flex",alignItems:"center",gap:8}}>
-          <span style={{fontSize:11,color:"#888",letterSpacing:1}}>THEM</span>
+          <span style={{fontSize:11,color:"#888",letterSpacing:1}}>BAD GUYS</span>
           <span style={{fontSize:28,fontWeight:900,color:"#ef4444"}}>{stats.oppScore}</span>
         </div>
         <div style={{display:"flex",alignItems:"center",gap:4,marginLeft:8}}>
